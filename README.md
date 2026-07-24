@@ -60,9 +60,35 @@ nrf24_bthome:
 Frames from sender IDs without a `devices` entry are logged at DEBUG and
 ignored — pairing a remote to a lamp is purely a YAML decision.
 
+## Entities
+
+```yaml
+sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    battery:
+      name: "Remote Battery"
+    voltage:
+      name: "Remote Voltage"
+
+text_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    device_name:
+      name: "Remote Name"
+    firmware_version:
+      name: "Remote Firmware"
+```
+
+Values come from the remotes' periodic status packets; battery/voltage also
+piggyback on every event packet.
+
 ## Status
 
-- [x] Hub with minimal nRF24 RX driver (SPI register level)
-- [x] Per-device `on_button` / `on_dimmer` triggers with packet-id dedup
-- [ ] Sensor platform (battery %, voltage) and text sensors (name, firmware)
+Hardware-verified end to end (ESP32-C3, esp-idf) against the RotRemote_BTHome
+sender: click, rotate (dimmer 1), held-rotate (dimmer 2), periodic status,
+per-event battery updates, packet-id dedup of the broadcast repeats.
+
 - [ ] Pin bthome-cpp to a registry release once `BTHome::Decoder` ships
+- [ ] Optional: IRQ-pin support instead of FIFO polling (lamp boards have
+      the nRF24 IRQ wired)

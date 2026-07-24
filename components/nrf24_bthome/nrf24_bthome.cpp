@@ -137,8 +137,10 @@ void NRF24BTHomeHub::loop() {
     this->handle_frame_(frame, len);
   }
 
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
   // Diagnostic: sample the carrier detector so RF-level problems can be
-  // told apart from protocol-level ones (throttled, VERBOSE only).
+  // told apart from protocol-level ones. Compiled out below VERBOSE so
+  // production builds don't pay an extra SPI read per loop.
   if (this->read_register_(REG_RPD) & 0x01) {
     static uint32_t last_rpd_log = 0;
     if (millis() - last_rpd_log > 1000) {
@@ -146,6 +148,7 @@ void NRF24BTHomeHub::loop() {
       ESP_LOGV(TAG, "RF energy on channel %u", this->channel_);
     }
   }
+#endif
 
   // The nRF24 can wedge silently (a known quirk, especially on clones):
   // re-init after a configurable quiet period.
