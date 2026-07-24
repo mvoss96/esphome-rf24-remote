@@ -1,0 +1,56 @@
+# Compile test mirroring the target lamp hardware: ESP32-C3 with the nRF24
+# on the default FSPI pins, CE on GPIO7, CSN on GPIO8 (same wiring as the
+# legacy SMART_WIFI-RF24_LAMP boards).
+esphome:
+  name: nrf24-bthome-test
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+spi:
+  clk_pin: GPIO4
+  miso_pin: GPIO5
+  mosi_pin: GPIO6
+
+nrf24_bthome:
+  cs_pin: GPIO8
+  ce_pin: GPIO7
+  channel: 100
+  address: "BTHME"
+  devices:
+    - id: remote1
+      sender_id: "B7:4F:E7:7F"
+      on_button:
+        - logger.log:
+            format: "button %u: %s"
+            args: [button, event.c_str()]
+      on_dimmer:
+        - logger.log:
+            format: "dimmer %u: %d steps"
+            args: [dimmer, steps]
+
+sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    battery:
+      name: "Remote 1 Battery"
+    voltage:
+      name: "Remote 1 Voltage"
+
+text_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    device_name:
+      name: "Remote 1 Name"
+    firmware_version:
+      name: "Remote 1 Firmware"
