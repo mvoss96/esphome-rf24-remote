@@ -66,19 +66,39 @@ nrf24_bthome:
               - light.dim_relative:
                   id: test_led
                   relative_brightness: !lambda return steps * 0.05f;
+        - if:
+            condition:
+              lambda: return dimmer == 2;
+            then:
+              # Held-rotate shifts the color temperature; right = warmer,
+              # like the legacy lamp firmware. ~15 mireds per detent spans
+              # the 153-370 range in ~14 steps.
+              - lambda: |-
+                  auto call = id(test_led).make_call();
+                  const float ct = id(test_led).remote_values.get_color_temperature();
+                  call.set_color_temperature(clamp(ct + steps * 15.0f, 153.0f, 370.0f));
+                  call.perform();
 
-# Virtual LED on a free pin (no physical LED needed): state is visible and
-# controllable in Home Assistant, driven by the remote via the automations.
+# Virtual CCT light on free pins (no physical LEDs needed): state is visible
+# and controllable in Home Assistant, driven by the remote via the automations.
+# Mirrors the real lamps: 2700-6500 K, warm+cold sum to the set brightness.
 output:
   - platform: ledc
     pin: GPIO10
-    id: led_output
+    id: warm_output
+  - platform: ledc
+    pin: GPIO3
+    id: cold_output
 
 light:
-  - platform: monochromatic
+  - platform: cwww
     id: test_led
     name: "RF24 Test LED"
-    output: led_output
+    warm_white: warm_output
+    cold_white: cold_output
+    warm_white_color_temperature: 370 mireds  # 2700 K
+    cold_white_color_temperature: 153 mireds  # 6500 K
+    constant_brightness: true
     default_transition_length: 100ms
 
 sensor:
