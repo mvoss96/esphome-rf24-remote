@@ -26,6 +26,7 @@ static const uint8_t REG_SETUP_RETR = 0x04;
 static const uint8_t REG_RF_CH = 0x05;
 static const uint8_t REG_RF_SETUP = 0x06;
 static const uint8_t REG_STATUS = 0x07;
+static const uint8_t REG_RPD = 0x09;  // received power detector (carrier > ~-64 dBm)
 static const uint8_t REG_RX_ADDR_P1 = 0x0B;
 static const uint8_t REG_FIFO_STATUS = 0x17;
 static const uint8_t REG_DYNPD = 0x1C;
@@ -61,7 +62,10 @@ void NRF24BTHomeHub::radio_init_() {
   delay(5);  // power-on / settling
 
   this->write_register_(REG_CONFIG, CONFIG_STANDBY);
-  this->write_register_(REG_EN_AA, 0x00);       // never ACK: pure listener on a broadcast
+  // ENAA_P1 must stay set: the datasheet gates dynamic payload length on
+  // auto-ack being enabled for the pipe. No ACKs are transmitted anyway -
+  // the senders flag every frame NO_ACK.
+  this->write_register_(REG_EN_AA, 0x02);
   this->write_register_(REG_EN_RXADDR, 0x02);   // pipe 1 only
   this->write_register_(REG_SETUP_AW, 0x03);    // 5-byte addresses
   this->write_register_(REG_SETUP_RETR, 0x00);  // no auto-retransmit (RX only)
@@ -95,6 +99,22 @@ void NRF24BTHomeHub::radio_init_() {
 
   this->last_activity_ms_ = millis();
   ESP_LOGD(TAG, "Radio initialized (chip %s)", this->chip_ok_ ? "ok" : "MISSING");
+
+  uint8_t addr[5] = {0};
+  this->enable();
+  this->transfer_byte(CMD_R_REGISTER | REG_RX_ADDR_P1);
+  for (uint8_t &b : addr) {
+    b = this->transfer_byte(0xFF);
+  }
+  this->disable();
+  ESP_LOGD(TAG,
+           "Regs: CONFIG=%02X EN_AA=%02X EN_RXADDR=%02X AW=%02X CH=%u RF=%02X FEATURE=%02X "
+           "DYNPD=%02X FIFO=%02X P1=%02X:%02X:%02X:%02X:%02X",
+           this->read_register_(REG_CONFIG), this->read_register_(REG_EN_AA),
+           this->read_register_(REG_EN_RXADDR), this->read_register_(REG_SETUP_AW),
+           this->read_register_(REG_RF_CH), this->read_register_(REG_RF_SETUP),
+           this->read_register_(REG_FEATURE), this->read_register_(REG_DYNPD),
+           this->read_register_(REG_FIFO_STATUS), addr[0], addr[1], addr[2], addr[3], addr[4]);
 }
 
 void NRF24BTHomeHub::loop() {
@@ -115,6 +135,16 @@ void NRF24BTHomeHub::loop() {
     this->write_register_(REG_STATUS, STATUS_RX_DR);
     this->last_activity_ms_ = millis();
     this->handle_frame_(frame, len);
+  }
+
+  // Diagnostic: sample the carrier detector so RF-level problems can be
+  // told apart from protocol-level ones (throttled, VERBOSE only).
+  if (this->read_register_(REG_RPD) & 0x01) {
+    static uint32_t last_rpd_log = 0;
+    if (millis() - last_rpd_log > 1000) {
+      last_rpd_log = millis();
+      ESP_LOGV(TAG, "RF energy on channel %u", this->channel_);
+    }
   }
 
   // The nRF24 can wedge silently (a known quirk, especially on clones):

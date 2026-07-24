@@ -77,8 +77,10 @@ CONFIG_SCHEMA = (
             cv.Required(CONF_CE_PIN): pins.gpio_output_pin_schema,
             cv.Optional(CONF_CHANNEL, default=100): cv.int_range(min=0, max=125),
             cv.Optional(CONF_ADDRESS, default="BTHME"): _address,
+            # Should comfortably exceed the senders' status interval, or the
+            # radio re-inits (harmlessly but pointlessly) between packets.
             cv.Optional(
-                CONF_WATCHDOG_TIMEOUT, default="30s"
+                CONF_WATCHDOG_TIMEOUT, default="5min"
             ): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_DEVICES, default=[]): cv.ensure_list(DEVICE_SCHEMA),
         }
