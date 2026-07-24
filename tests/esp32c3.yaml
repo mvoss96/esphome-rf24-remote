@@ -32,14 +32,20 @@ spi:
   miso_pin: GPIO5
   mosi_pin: GPIO6
 
+time:
+  - platform: homeassistant
+    id: ha_time
+
 nrf24_bthome:
   cs_pin: GPIO8
   ce_pin: GPIO7
   channel: 100
   address: "BTHME"
+  time_id: ha_time
   devices:
     - id: remote1
       sender_id: "B7:4F:E7:7F"
+      timeout: 3min  # remote currently sends status every ~1min (test build)
       on_button:
         - logger.log:
             format: "button %u: %s"
@@ -82,6 +88,14 @@ sensor:
       name: "Remote 1 Battery"
     voltage:
       name: "Remote 1 Voltage"
+    last_seen:
+      name: "Remote 1 Last Seen"
+
+binary_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    connected:
+      name: "Remote 1 Connected"
 
 text_sensor:
   - platform: nrf24_bthome

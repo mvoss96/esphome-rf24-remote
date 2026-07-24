@@ -153,6 +153,14 @@ void NRF24BTHomeHub::loop() {
   }
 #endif
 
+  // Offline detection: sweep the devices about once a second.
+  if (millis() - this->last_timeout_check_ms_ > 1000) {
+    this->last_timeout_check_ms_ = millis();
+    for (auto *dev : this->devices_) {
+      dev->check_timeout(millis());
+    }
+  }
+
   // The nRF24 can wedge silently (a known quirk, especially on clones):
   // re-init after a configurable quiet period.
   if (this->watchdog_timeout_ > 0 && millis() - this->last_activity_ms_ > this->watchdog_timeout_) {
@@ -248,6 +256,16 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
     return false;
   }
 
+  // Every valid frame counts as contact, including the broadcast repeats.
+  this->last_contact_ms_ = millis();
+  this->ever_seen_ = true;
+#ifdef USE_BINARY_SENSOR
+  if (this->connected_sensor_ != nullptr &&
+      (!this->connected_sensor_->has_state() || !this->connected_sensor_->state)) {
+    this->connected_sensor_->publish_state(true);
+  }
+#endif
+
   // Instance counters: the k-th button/dimmer object addresses instance k.
   uint8_t button_index = 0;
   uint8_t dimmer_index = 0;
@@ -340,7 +358,35 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
   if (!decoder.ok()) {
     ESP_LOGW(TAG, "Malformed BTHome payload (parsed partially)");
   }
+
+#if defined(USE_SENSOR) && defined(USE_TIME)
+  // Once per unique packet (repeats returned above via the dedup).
+  if (this->last_seen_sensor_ != nullptr && this->rtc_ != nullptr) {
+    const auto now = this->rtc_->utcnow();
+    if (now.is_valid()) {
+      this->last_seen_sensor_->publish_state(now.timestamp);
+    }
+  }
+#endif
   return true;
+}
+
+void NRF24BTHomeDevice::check_timeout(uint32_t now_ms) {
+#ifdef USE_BINARY_SENSOR
+  if (this->timeout_ms_ == 0 || this->connected_sensor_ == nullptr) {
+    return;
+  }
+  // Before the first frame the boot counts as the reference point.
+  const uint32_t reference = this->ever_seen_ ? this->last_contact_ms_ : 0;
+  if (now_ms - reference > this->timeout_ms_) {
+    if (!this->connected_sensor_->has_state() || this->connected_sensor_->state) {
+      ESP_LOGW(TAG, "Remote %02X:%02X:%02X:%02X offline (no contact for %u ms)",
+               this->sender_id_[0], this->sender_id_[1], this->sender_id_[2], this->sender_id_[3],
+               static_cast<unsigned>(now_ms - reference));
+      this->connected_sensor_->publish_state(false);
+    }
+  }
+#endif
 }
 
 // ---- SPI plumbing ---------------------------------------------------------------

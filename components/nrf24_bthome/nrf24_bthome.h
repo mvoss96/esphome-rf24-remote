@@ -11,6 +11,12 @@
 #ifdef USE_TEXT_SENSOR
 #include "esphome/components/text_sensor/text_sensor.h"
 #endif
+#ifdef USE_BINARY_SENSOR
+#include "esphome/components/binary_sensor/binary_sensor.h"
+#endif
+#ifdef USE_TIME
+#include "esphome/components/time/real_time_clock.h"
+#endif
 
 #include <array>
 #include <string>
@@ -55,7 +61,8 @@ class NRF24BTHomeHub : public Component,
   uint8_t channel_{100};
   std::array<uint8_t, 5> address_{{'B', 'T', 'H', 'M', 'E'}};
   uint32_t watchdog_timeout_{30000};
-  uint32_t last_activity_ms_{0};  // last received frame or (re-)init
+  uint32_t last_activity_ms_{0};       // last received frame or (re-)init
+  uint32_t last_timeout_check_ms_{0};  // throttle for the per-device offline sweep
   bool chip_ok_{false};
   std::vector<NRF24BTHomeDevice *> devices_;
 };
@@ -83,6 +90,7 @@ class NRF24BTHomeDevice {
 #ifdef USE_SENSOR
   void set_battery_sensor(sensor::Sensor *s) { this->battery_sensor_ = s; }
   void set_voltage_sensor(sensor::Sensor *s) { this->voltage_sensor_ = s; }
+  void set_last_seen_sensor(sensor::Sensor *s) { this->last_seen_sensor_ = s; }
 #endif
 #ifdef USE_TEXT_SENSOR
   void set_name_text_sensor(text_sensor::TextSensor *s) { this->name_text_sensor_ = s; }
@@ -90,22 +98,48 @@ class NRF24BTHomeDevice {
   void set_sender_id_text_sensor(text_sensor::TextSensor *s) { this->sender_id_text_sensor_ = s; }
 #endif
 
+#ifdef USE_BINARY_SENSOR
+  void set_connected_binary_sensor(binary_sensor::BinarySensor *s) { this->connected_sensor_ = s; }
+#endif
+#ifdef USE_TIME
+  void set_time(time::RealTimeClock *rtc) { this->rtc_ = rtc; }
+#endif
+  // Contact is considered lost after this quiet period (0 = never). Must
+  // exceed the sender's periodic status interval.
+  void set_timeout(uint32_t timeout_ms) { this->timeout_ms_ = timeout_ms; }
+
   // Publishes configuration-known values (sender ID); called once by the hub.
   void publish_static_info();
+
+  // Called periodically by the hub to flip the connectivity sensor to
+  // offline after the quiet period.
+  void check_timeout(uint32_t now_ms);
 
  protected:
   std::array<uint8_t, 4> sender_id_{{0, 0, 0, 0}};
   int16_t last_packet_id_{-1};  // -1 = nothing received yet
+  uint32_t timeout_ms_{0};
+  uint32_t last_contact_ms_{0};  // millis() of the last valid frame (repeats count)
+  bool ever_seen_{false};
   std::vector<Trigger<uint8_t, std::string> *> button_triggers_;
   std::vector<Trigger<uint8_t, int> *> dimmer_triggers_;
 #ifdef USE_SENSOR
   sensor::Sensor *battery_sensor_{nullptr};
   sensor::Sensor *voltage_sensor_{nullptr};
 #endif
+#ifdef USE_SENSOR
+  sensor::Sensor *last_seen_sensor_{nullptr};
+#endif
 #ifdef USE_TEXT_SENSOR
   text_sensor::TextSensor *name_text_sensor_{nullptr};
   text_sensor::TextSensor *firmware_text_sensor_{nullptr};
   text_sensor::TextSensor *sender_id_text_sensor_{nullptr};
+#endif
+#ifdef USE_BINARY_SENSOR
+  binary_sensor::BinarySensor *connected_sensor_{nullptr};
+#endif
+#ifdef USE_TIME
+  time::RealTimeClock *rtc_{nullptr};
 #endif
 };
 

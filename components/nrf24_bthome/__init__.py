@@ -1,8 +1,15 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation, pins
-from esphome.components import spi
-from esphome.const import CONF_ADDRESS, CONF_CHANNEL, CONF_ID, CONF_TRIGGER_ID
+from esphome.components import spi, time
+from esphome.const import (
+    CONF_ADDRESS,
+    CONF_CHANNEL,
+    CONF_ID,
+    CONF_TIME_ID,
+    CONF_TIMEOUT,
+    CONF_TRIGGER_ID,
+)
 
 CODEOWNERS = ["@mvoss96"]
 DEPENDENCIES = ["spi"]
@@ -61,6 +68,10 @@ DEVICE_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(NRF24BTHomeDevice),
         cv.Required(CONF_SENDER_ID): _sender_id,
+        # Quiet period after which the connected binary sensor reports
+        # offline. Must exceed the sender's periodic status interval;
+        # 0s disables the check.
+        cv.Optional(CONF_TIMEOUT, default="0s"): cv.positive_time_period_milliseconds,
         cv.Optional(CONF_ON_BUTTON): automation.validate_automation(
             {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(ButtonTrigger)}
         ),
@@ -82,6 +93,8 @@ CONFIG_SCHEMA = (
             cv.Optional(
                 CONF_WATCHDOG_TIMEOUT, default="5min"
             ): cv.positive_time_period_milliseconds,
+            # Time source for the devices' last_seen timestamp sensors.
+            cv.Optional(CONF_TIME_ID): cv.use_id(time.RealTimeClock),
             cv.Optional(CONF_DEVICES, default=[]): cv.ensure_list(DEVICE_SCHEMA),
         }
     )
@@ -101,9 +114,16 @@ async def to_code(config):
     cg.add(var.set_address(config[CONF_ADDRESS]))
     cg.add(var.set_watchdog_timeout(config[CONF_WATCHDOG_TIMEOUT]))
 
+    rtc = None
+    if CONF_TIME_ID in config:
+        rtc = await cg.get_variable(config[CONF_TIME_ID])
+
     for device_config in config[CONF_DEVICES]:
         device = cg.new_Pvariable(device_config[CONF_ID])
         cg.add(device.set_sender_id(device_config[CONF_SENDER_ID]))
+        cg.add(device.set_timeout(device_config[CONF_TIMEOUT]))
+        if rtc is not None:
+            cg.add(device.set_time(rtc))
         cg.add(var.register_device(device))
 
         for trigger_config in device_config.get(CONF_ON_BUTTON, []):

@@ -4,6 +4,7 @@ from esphome.components import sensor
 from esphome.const import (
     CONF_VOLTAGE,
     DEVICE_CLASS_BATTERY,
+    DEVICE_CLASS_TIMESTAMP,
     DEVICE_CLASS_VOLTAGE,
     ENTITY_CATEGORY_DIAGNOSTIC,
     STATE_CLASS_MEASUREMENT,
@@ -15,6 +16,7 @@ from . import NRF24BTHomeDevice
 
 CONF_NRF24_BTHOME_DEVICE_ID = "nrf24_bthome_device_id"
 CONF_BATTERY = "battery"
+CONF_LAST_SEEN = "last_seen"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -33,6 +35,13 @@ CONFIG_SCHEMA = cv.Schema(
             state_class=STATE_CLASS_MEASUREMENT,
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
+        # Epoch of the last unique packet; needs time_id on the hub. float32
+        # quantizes the epoch to ~2 minutes, plenty for battery remotes.
+        cv.Optional(CONF_LAST_SEEN): sensor.sensor_schema(
+            device_class=DEVICE_CLASS_TIMESTAMP,
+            accuracy_decimals=0,
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
     }
 )
 
@@ -45,3 +54,6 @@ async def to_code(config):
     if CONF_VOLTAGE in config:
         sens = await sensor.new_sensor(config[CONF_VOLTAGE])
         cg.add(device.set_voltage_sensor(sens))
+    if CONF_LAST_SEEN in config:
+        sens = await sensor.new_sensor(config[CONF_LAST_SEEN])
+        cg.add(device.set_last_seen_sensor(sens))
