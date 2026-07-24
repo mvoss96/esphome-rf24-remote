@@ -12,6 +12,16 @@ esp32:
 logger:
   level: VERBOSE
 
+wifi:
+  ap: {}
+
+captive_portal:
+
+api:
+
+ota:
+  - platform: esphome
+
 external_components:
   - source:
       type: local
@@ -34,10 +44,36 @@ nrf24_bthome:
         - logger.log:
             format: "button %u: %s"
             args: [button, event.c_str()]
+        - if:
+            condition:
+              lambda: return event == "press";
+            then:
+              - light.toggle: test_led
       on_dimmer:
         - logger.log:
             format: "dimmer %u: %d steps"
             args: [dimmer, steps]
+        - if:
+            condition:
+              lambda: return dimmer == 1;
+            then:
+              - light.dim_relative:
+                  id: test_led
+                  relative_brightness: !lambda return steps * 0.05f;
+
+# Virtual LED on a free pin (no physical LED needed): state is visible and
+# controllable in Home Assistant, driven by the remote via the automations.
+output:
+  - platform: ledc
+    pin: GPIO10
+    id: led_output
+
+light:
+  - platform: monochromatic
+    id: test_led
+    name: "RF24 Test LED"
+    output: led_output
+    default_transition_length: 100ms
 
 sensor:
   - platform: nrf24_bthome

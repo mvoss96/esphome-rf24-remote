@@ -1,3 +1,4 @@
 tests/.esphome/
 tests/*.bin
 __pycache__/
+tests/secrets.yaml
