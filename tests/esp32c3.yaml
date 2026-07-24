@@ -90,3 +90,5 @@ text_sensor:
       name: "Remote 1 Name"
     firmware_version:
       name: "Remote 1 Firmware"
+    sender_id:
+      name: "Remote 1 Sender ID"

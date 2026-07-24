@@ -8,6 +8,7 @@ from .sensor import CONF_NRF24_BTHOME_DEVICE_ID
 
 CONF_DEVICE_NAME = "device_name"
 CONF_FIRMWARE_VERSION = "firmware_version"
+CONF_SENDER_ID = "sender_id"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -16,6 +17,9 @@ CONFIG_SCHEMA = cv.Schema(
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
         cv.Optional(CONF_FIRMWARE_VERSION): text_sensor.text_sensor_schema(
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional(CONF_SENDER_ID): text_sensor.text_sensor_schema(
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
     }
@@ -30,3 +34,6 @@ async def to_code(config):
     if CONF_FIRMWARE_VERSION in config:
         sens = await text_sensor.new_text_sensor(config[CONF_FIRMWARE_VERSION])
         cg.add(device.set_firmware_text_sensor(sens))
+    if CONF_SENDER_ID in config:
+        sens = await text_sensor.new_text_sensor(config[CONF_SENDER_ID])
+        cg.add(device.set_sender_id_text_sensor(sens))

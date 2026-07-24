@@ -55,6 +55,9 @@ void NRF24BTHomeHub::setup() {
     ESP_LOGE(TAG, "nRF24 not responding - check wiring (CE/CSN/SPI)");
     this->status_set_error();
   }
+  for (auto *dev : this->devices_) {
+    dev->publish_static_info();
+  }
 }
 
 void NRF24BTHomeHub::radio_init_() {
@@ -199,6 +202,17 @@ void NRF24BTHomeDevice::set_sender_id(const std::vector<uint8_t> &id) {
 
 bool NRF24BTHomeDevice::matches(const uint8_t *id) const {
   return memcmp(this->sender_id_.data(), id, this->sender_id_.size()) == 0;
+}
+
+void NRF24BTHomeDevice::publish_static_info() {
+#ifdef USE_TEXT_SENSOR
+  if (this->sender_id_text_sensor_ != nullptr) {
+    char id[12];
+    snprintf(id, sizeof(id), "%02X:%02X:%02X:%02X", this->sender_id_[0], this->sender_id_[1],
+             this->sender_id_[2], this->sender_id_[3]);
+    this->sender_id_text_sensor_->publish_state(id);
+  }
+#endif
 }
 
 static std::string button_event_name(uint8_t code) {

@@ -87,7 +87,11 @@ class NRF24BTHomeDevice {
 #ifdef USE_TEXT_SENSOR
   void set_name_text_sensor(text_sensor::TextSensor *s) { this->name_text_sensor_ = s; }
   void set_firmware_text_sensor(text_sensor::TextSensor *s) { this->firmware_text_sensor_ = s; }
+  void set_sender_id_text_sensor(text_sensor::TextSensor *s) { this->sender_id_text_sensor_ = s; }
 #endif
+
+  // Publishes configuration-known values (sender ID); called once by the hub.
+  void publish_static_info();
 
  protected:
   std::array<uint8_t, 4> sender_id_{{0, 0, 0, 0}};
@@ -101,6 +105,7 @@ class NRF24BTHomeDevice {
 #ifdef USE_TEXT_SENSOR
   text_sensor::TextSensor *name_text_sensor_{nullptr};
   text_sensor::TextSensor *firmware_text_sensor_{nullptr};
+  text_sensor::TextSensor *sender_id_text_sensor_{nullptr};
 #endif
 };
 
