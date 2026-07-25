@@ -446,7 +446,7 @@ void NRF24BTHomeHub::dump_config() {
   ESP_LOGCONFIG(TAG, "  Channel: %u", this->channel_);
   ESP_LOGCONFIG(TAG, "  Address: %02X:%02X:%02X:%02X:%02X", this->address_[0], this->address_[1],
                 this->address_[2], this->address_[3], this->address_[4]);
-  ESP_LOGCONFIG(TAG, "  Watchdog: %u ms", this->watchdog_timeout_);
+  ESP_LOGCONFIG(TAG, "  Watchdog: %u ms", static_cast<unsigned>(this->watchdog_timeout_));
   ESP_LOGCONFIG(TAG, "  Chip connected: %s", YESNO(this->chip_ok_));
   for (auto *dev : this->devices_) {
     ESP_LOGCONFIG(TAG, "  Device: %02X:%02X:%02X:%02X", dev->sender_id()[0], dev->sender_id()[1],
