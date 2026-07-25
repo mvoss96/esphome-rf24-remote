@@ -34,8 +34,7 @@ CONF_ON_BUTTON = "on_button"
 CONF_ON_DIMMER = "on_dimmer"
 CONF_WATCHDOG_TIMEOUT = "watchdog_timeout"
 
-# TODO: pin a registry release once bthome-cpp PR #22 (BTHome::Decoder) ships.
-BTHOME_CPP_REPOSITORY = "https://github.com/mvoss96/bthome-cpp.git#feature/decode-module"
+BTHOME_CPP_VERSION = "0.4.0"  # PlatformIO registry: mvoss96/bthome-cpp
 
 
 def _hex_bytes(value, count, what):
@@ -142,4 +141,4 @@ async def to_code(config):
                 trigger_config,
             )
 
-    cg.add_library("bthome-cpp", None, BTHOME_CPP_REPOSITORY)
+    cg.add_library("mvoss96/bthome-cpp", BTHOME_CPP_VERSION)

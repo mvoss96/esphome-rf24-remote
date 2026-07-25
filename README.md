@@ -89,6 +89,6 @@ Hardware-verified end to end (ESP32-C3, esp-idf) against the RotRemote_BTHome
 sender: click, rotate (dimmer 1), held-rotate (dimmer 2), periodic status,
 per-event battery updates, packet-id dedup of the broadcast repeats.
 
-- [ ] Pin bthome-cpp to a registry release once `BTHome::Decoder` ships
+- [x] bthome-cpp pinned to registry release `mvoss96/bthome-cpp@0.4.0`
 - [ ] Optional: IRQ-pin support instead of FIFO polling (lamp boards have
       the nRF24 IRQ wired)
