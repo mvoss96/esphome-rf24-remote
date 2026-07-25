@@ -246,7 +246,7 @@ static std::string button_event_name(uint8_t code) {
 
 bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
   BTHome::Decoder decoder(data, len);
-  if (!decoder.valid()) {
+  if (decoder.status() == BTHome::DecodeStatus::BadHeader) {
     ESP_LOGW(TAG, "Invalid BTHome service data from %02X:%02X:%02X:%02X", this->sender_id_[0],
              this->sender_id_[1], this->sender_id_[2], this->sender_id_[3]);
     return false;
@@ -273,7 +273,7 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
   BTHome::Decoded obj;
   while (decoder.next(obj)) {
     switch (obj.kind) {
-      case BTHome::DecodedKind::PacketId: {
+      case BTHome::ObjectKind::PacketId: {
         // The sender repeats every frame a few times (NO_ACK broadcast);
         // an unchanged packet id identifies those repeats.
         if (static_cast<int16_t>(obj.raw) == this->last_packet_id_) {
@@ -282,10 +282,10 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
         this->last_packet_id_ = static_cast<int16_t>(obj.raw);
         break;
       }
-      case BTHome::DecodedKind::ButtonEvent: {
+      case BTHome::ObjectKind::ButtonEvent: {
         button_index++;
-        if (obj.event != static_cast<uint8_t>(BTHome::ButtonEventType::None)) {
-          const std::string name = button_event_name(obj.event);
+        if (obj.event() != static_cast<uint8_t>(BTHome::ButtonEventType::None)) {
+          const std::string name = button_event_name(obj.event());
           ESP_LOGD(TAG, "Button %u: %s", button_index, name.c_str());
           for (auto *trigger : this->button_triggers_) {
             trigger->trigger(button_index, name);
@@ -293,11 +293,11 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
         }
         break;
       }
-      case BTHome::DecodedKind::DimmerEvent: {
+      case BTHome::ObjectKind::DimmerEvent: {
         dimmer_index++;
-        if (obj.event != static_cast<uint8_t>(BTHome::DimmerEventType::None)) {
-          const bool left = obj.event == static_cast<uint8_t>(BTHome::DimmerEventType::RotateLeft);
-          const int steps = left ? -static_cast<int>(obj.steps) : static_cast<int>(obj.steps);
+        if (obj.event() != static_cast<uint8_t>(BTHome::DimmerEventType::None)) {
+          const bool left = obj.event() == static_cast<uint8_t>(BTHome::DimmerEventType::RotateLeft);
+          const int steps = left ? -static_cast<int>(obj.steps()) : static_cast<int>(obj.steps());
           ESP_LOGD(TAG, "Dimmer %u: %d steps", dimmer_index, steps);
           for (auto *trigger : this->dimmer_triggers_) {
             trigger->trigger(dimmer_index, steps);
@@ -305,21 +305,19 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
         }
         break;
       }
-      case BTHome::DecodedKind::Sensor: {
+      case BTHome::ObjectKind::Sensor: {
         ESP_LOGV(TAG, "Sensor 0x%02X: %.3f", obj.object_id, obj.value);
 #ifdef USE_SENSOR
-        if (obj.object_id == static_cast<uint8_t>(BTHome::SensorObjectId::Battery) &&
-            this->battery_sensor_ != nullptr) {
+        if (obj.is(BTHome::ObjectId::Battery) && this->battery_sensor_ != nullptr) {
           this->battery_sensor_->publish_state(obj.value);
         }
-        if (obj.object_id == static_cast<uint8_t>(BTHome::SensorObjectId::Voltage) &&
-            this->voltage_sensor_ != nullptr) {
+        if (obj.is(BTHome::ObjectId::Voltage) && this->voltage_sensor_ != nullptr) {
           this->voltage_sensor_->publish_state(obj.value);
         }
 #endif
         break;
       }
-      case BTHome::DecodedKind::Text: {
+      case BTHome::ObjectKind::Text: {
         ESP_LOGV(TAG, "Device name: %.*s", obj.length, reinterpret_cast<const char *>(obj.bytes));
 #ifdef USE_TEXT_SENSOR
         if (this->name_text_sensor_ != nullptr) {
@@ -331,11 +329,11 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
 #endif
         break;
       }
-      case BTHome::DecodedKind::DeviceTypeId: {
+      case BTHome::ObjectKind::DeviceTypeId: {
         ESP_LOGV(TAG, "Device type: %u", static_cast<unsigned>(obj.raw));
         break;
       }
-      case BTHome::DecodedKind::FirmwareVersion: {
+      case BTHome::ObjectKind::FirmwareVersion: {
         ESP_LOGV(TAG, "Firmware: %u.%u.%u", static_cast<unsigned>((obj.raw >> 16) & 0xFF),
                  static_cast<unsigned>((obj.raw >> 8) & 0xFF), static_cast<unsigned>(obj.raw & 0xFF));
 #ifdef USE_TEXT_SENSOR
@@ -355,8 +353,12 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
         break;
     }
   }
-  if (!decoder.ok()) {
-    ESP_LOGW(TAG, "Malformed BTHome payload (parsed partially)");
+  const auto decode_status = decoder.status();
+  if (decode_status != BTHome::DecodeStatus::End) {
+    ESP_LOGW(TAG, "Malformed BTHome payload, parsed partially (%s)",
+             decode_status == BTHome::DecodeStatus::Truncated   ? "truncated"
+             : decode_status == BTHome::DecodeStatus::UnknownId ? "unknown object id"
+                                                                : "error");
   }
 
 #if defined(USE_SENSOR) && defined(USE_TIME)
