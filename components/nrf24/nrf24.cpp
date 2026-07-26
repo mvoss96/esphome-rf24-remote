@@ -178,6 +178,25 @@ void NRF24Hub::drain_fifo_() {
     this->read_payload_(frame, len);
     this->write_register_(REG_STATUS, STATUS_RX_DR);
     this->last_activity_ms_ = millis();
+
+#if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
+    // The frame as it came out of the FIFO, before any listener interprets it.
+    // Two receivers can then be compared byte for byte against what the sender
+    // logged - which is how you tell a real transmission from corruption on one
+    // receiver's own path, and the only way to be sure that an unexpected
+    // packet id was on the air rather than a flipped bit. Compiled out below
+    // VERBOSE, so production builds pay nothing.
+    static const char DIGITS[] = "0123456789ABCDEF";
+    char hex[65];
+    for (uint8_t i = 0; i < len; i++) {
+      hex[i * 2] = DIGITS[frame[i] >> 4];
+      hex[i * 2 + 1] = DIGITS[frame[i] & 0x0F];
+    }
+    hex[len * 2] = '\0';
+    ESP_LOGV(TAG, "RX p%u len=%u %s", static_cast<unsigned>(pipe),
+             static_cast<unsigned>(len), hex);
+#endif
+
     for (auto *listener : this->listeners_) {
       listener->on_nrf24_frame(pipe, frame, len);
     }
