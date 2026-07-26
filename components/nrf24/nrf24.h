@@ -58,6 +58,10 @@ class NRF24Hub : public Component,
 
   uint8_t channel() const { return this->channel_; }
   bool chip_ok() const { return this->chip_ok_; }
+  // How often the RX FIFO was found full, i.e. how often frames were at risk
+  // of being dropped. The chip has no lost-frame counter, so this is the only
+  // evidence available.
+  uint16_t fifo_full_count() const { return this->fifo_full_count_; }
 
  protected:
   static void IRAM_ATTR s_irq_isr(NRF24Hub *self) { self->irq_flag_ = true; }
@@ -80,6 +84,7 @@ class NRF24Hub : public Component,
   std::vector<std::array<uint8_t, 5>> pipes_;
   uint32_t watchdog_timeout_{300000};  // overwritten by codegen; keep in sync with the 5min schema default
   uint32_t last_activity_ms_{0};       // last received frame or (re-)init
+  uint16_t fifo_full_count_{0};        // times the RX FIFO was found full
   bool chip_ok_{false};
   std::vector<NRF24Listener *> listeners_;
 };
