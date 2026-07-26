@@ -38,6 +38,7 @@ static const uint8_t CONFIG_RX = 0x3F;       // + PWR_UP | PRIM_RX
 static const uint8_t STATUS_CLEAR = 0x70;    // clear RX_DR | TX_DS | MAX_RT
 static const uint8_t STATUS_RX_DR = 0x40;
 static const uint8_t FIFO_RX_EMPTY = 0x01;
+static const uint8_t FIFO_RX_FULL = 0x02;
 
 void NRF24Hub::add_pipe(const std::vector<uint8_t> &address) {
   std::array<uint8_t, 5> addr{};
@@ -149,8 +150,21 @@ void NRF24Hub::drain_fifo_() {
   // Drain the 3-deep RX FIFO; the guard keeps a flooded channel from
   // starving the rest of the loop.
   for (uint8_t guard = 0; guard < 8; guard++) {
-    if (this->read_register_(REG_FIFO_STATUS) & FIFO_RX_EMPTY) {
+    const uint8_t fifo = this->read_register_(REG_FIFO_STATUS);
+    if (fifo & FIFO_RX_EMPTY) {
       break;
+    }
+    // A full FIFO means frames arriving right now are being dropped by the
+    // chip, and it has no lost-frame counter to ask afterwards - so this is the
+    // only evidence there is. It says at least one frame was at risk, not that
+    // exactly one was lost. Measured: copies sent back to back with no gap do
+    // get lost this way, while a real sender's few-ms repeats all arrive.
+    if (fifo & FIFO_RX_FULL) {
+      if (this->fifo_full_count_ < 0xFFFF) {
+        this->fifo_full_count_++;
+      }
+      ESP_LOGW(TAG, "RX FIFO full, frames may have been dropped (n=%u)",
+               static_cast<unsigned>(this->fifo_full_count_));
     }
     // RX_P_NO in STATUS names the pipe of the payload at the FIFO top.
     const uint8_t pipe = (this->read_register_(REG_STATUS) >> 1) & 0x07;
