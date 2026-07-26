@@ -27,7 +27,7 @@ wedge silently, especially clones).
 
 ```yaml
 external_components:
-  - source: github://mvoss96/esphome-rf24-remote
+  - source: github://mvoss96/esphome-rf24-remote@v0.1.0
     components: [nrf24_bthome]
 
 spi:
