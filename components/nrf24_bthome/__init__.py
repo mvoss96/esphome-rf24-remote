@@ -44,11 +44,16 @@ def _hex_bytes(value, count, what):
         parts = value.split(":")
         if len(parts) != count:
             raise cv.Invalid(f"{what} must have {count} bytes")
-        try:
-            return [int(p, 16) for p in parts]
-        except ValueError as err:
-            raise cv.Invalid(f"{what}: invalid hex byte") from err
+        # Plain 1-2 hex digits only: int(p, 16) alone would also accept
+        # signs, '0x' prefixes, whitespace and values > 0xFF, deferring the
+        # failure to a narrowing error in the generated C++.
+        for p in parts:
+            if not 1 <= len(p) <= 2 or any(c not in "0123456789abcdefABCDEF" for c in p):
+                raise cv.Invalid(f"{what}: '{p}' is not a hex byte (00-FF)")
+        return [int(p, 16) for p in parts]
     if len(value) == count:
+        if any(ord(c) > 255 for c in value):
+            raise cv.Invalid(f"{what}: only single-byte (Latin-1) characters allowed")
         return [ord(c) for c in value]
     raise cv.Invalid(
         f"{what} must be {count} hex bytes ('AA:BB:...') or a {count}-char string"

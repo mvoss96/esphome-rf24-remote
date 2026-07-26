@@ -40,7 +40,7 @@ nrf24_bthome:
   ce_pin: GPIO7
   channel: 100          # 0-125, default 100
   address: "BTHME"      # 5 chars or "42:54:48:4D:45", default BTHME
-  watchdog_timeout: 30s # 0s disables the re-init watchdog
+  watchdog_timeout: 5min # 0s disables; keep well above the senders' status interval
   devices:
     - sender_id: "B7:4F:E7:7F"   # printed in the remote's boot log
       on_button:

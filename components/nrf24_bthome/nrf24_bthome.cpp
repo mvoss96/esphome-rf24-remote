@@ -334,13 +334,32 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
         break;
       }
       case BTHome::ObjectKind::FirmwareVersion: {
-        ESP_LOGV(TAG, "Firmware: %u.%u.%u", static_cast<unsigned>((obj.raw >> 16) & 0xFF),
-                 static_cast<unsigned>((obj.raw >> 8) & 0xFF), static_cast<unsigned>(obj.raw & 0xFF));
+        // 0xF2 is uint24 [major.minor.patch]; 0xF1 is uint32 with the major
+        // byte in bits 24-31 and a trailing build byte [major.minor.patch.build].
+        const bool u32 = obj.is(BTHome::ObjectId::FirmwareVersionU32);
+        if (u32) {
+          ESP_LOGV(TAG, "Firmware: %u.%u.%u.%u", static_cast<unsigned>((obj.raw >> 24) & 0xFF),
+                   static_cast<unsigned>((obj.raw >> 16) & 0xFF),
+                   static_cast<unsigned>((obj.raw >> 8) & 0xFF), static_cast<unsigned>(obj.raw & 0xFF));
+        } else {
+          ESP_LOGV(TAG, "Firmware: %u.%u.%u", static_cast<unsigned>((obj.raw >> 16) & 0xFF),
+                   static_cast<unsigned>((obj.raw >> 8) & 0xFF), static_cast<unsigned>(obj.raw & 0xFF));
+        }
 #ifdef USE_TEXT_SENSOR
         if (this->firmware_text_sensor_ != nullptr) {
           char version[16];
-          snprintf(version, sizeof(version), "%u.%u.%u", static_cast<unsigned>((obj.raw >> 16) & 0xFF),
-                   static_cast<unsigned>((obj.raw >> 8) & 0xFF), static_cast<unsigned>(obj.raw & 0xFF));
+          if (u32) {
+            snprintf(version, sizeof(version), "%u.%u.%u.%u",
+                     static_cast<unsigned>((obj.raw >> 24) & 0xFF),
+                     static_cast<unsigned>((obj.raw >> 16) & 0xFF),
+                     static_cast<unsigned>((obj.raw >> 8) & 0xFF),
+                     static_cast<unsigned>(obj.raw & 0xFF));
+          } else {
+            snprintf(version, sizeof(version), "%u.%u.%u",
+                     static_cast<unsigned>((obj.raw >> 16) & 0xFF),
+                     static_cast<unsigned>((obj.raw >> 8) & 0xFF),
+                     static_cast<unsigned>(obj.raw & 0xFF));
+          }
           if (!this->firmware_text_sensor_->has_state() ||
               this->firmware_text_sensor_->state != version) {
             this->firmware_text_sensor_->publish_state(version);
@@ -374,19 +393,26 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
 }
 
 void NRF24BTHomeDevice::check_timeout(uint32_t now_ms) {
-#ifdef USE_BINARY_SENSOR
-  if (this->timeout_ms_ == 0 || this->connected_sensor_ == nullptr) {
+  if (this->timeout_ms_ == 0) {
     return;
   }
   // Before the first frame the boot counts as the reference point.
   const uint32_t reference = this->ever_seen_ ? this->last_contact_ms_ : 0;
-  if (now_ms - reference > this->timeout_ms_) {
-    if (!this->connected_sensor_->has_state() || this->connected_sensor_->state) {
-      ESP_LOGW(TAG, "Remote %02X:%02X:%02X:%02X offline (no contact for %u ms)",
-               this->sender_id_[0], this->sender_id_[1], this->sender_id_[2], this->sender_id_[3],
-               static_cast<unsigned>(now_ms - reference));
-      this->connected_sensor_->publish_state(false);
-    }
+  if (now_ms - reference <= this->timeout_ms_) {
+    return;
+  }
+  // Quiet period elapsed: forget the dedup id. The repeats it suppresses
+  // arrive within milliseconds, and a sender that reboots (battery swap)
+  // restarts its packet id counter - without aging, a 1-in-256 collision
+  // with the stale id would swallow the sender's first frame.
+  this->last_packet_id_ = -1;
+#ifdef USE_BINARY_SENSOR
+  if (this->connected_sensor_ != nullptr &&
+      (!this->connected_sensor_->has_state() || this->connected_sensor_->state)) {
+    ESP_LOGW(TAG, "Remote %02X:%02X:%02X:%02X offline (no contact for %u ms)",
+             this->sender_id_[0], this->sender_id_[1], this->sender_id_[2], this->sender_id_[3],
+             static_cast<unsigned>(now_ms - reference));
+    this->connected_sensor_->publish_state(false);
   }
 #endif
 }

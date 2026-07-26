@@ -1,7 +1,10 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import esphome.final_validate as fv
 from esphome.components import sensor
 from esphome.const import (
+    CONF_ID,
+    CONF_TIME_ID,
     CONF_VOLTAGE,
     DEVICE_CLASS_BATTERY,
     DEVICE_CLASS_TIMESTAMP,
@@ -12,7 +15,7 @@ from esphome.const import (
     UNIT_VOLT,
 )
 
-from . import NRF24BTHomeDevice
+from . import CONF_DEVICES, NRF24BTHomeDevice
 
 CONF_NRF24_BTHOME_DEVICE_ID = "nrf24_bthome_device_id"
 CONF_BATTERY = "battery"
@@ -44,6 +47,26 @@ CONFIG_SCHEMA = cv.Schema(
         ),
     }
 )
+
+
+def _require_hub_time_id(config):
+    """last_seen publishes rtc->utcnow(); without time_id on the hub the
+    entity would exist in HA but stay 'unknown' forever - fail loudly."""
+    if CONF_LAST_SEEN not in config:
+        return config
+    device_id = str(config[CONF_NRF24_BTHOME_DEVICE_ID])
+    for hub in fv.full_config.get().get("nrf24_bthome") or []:
+        for dev in hub.get(CONF_DEVICES, []):
+            if str(dev[CONF_ID]) == device_id and CONF_TIME_ID not in hub:
+                raise cv.Invalid(
+                    "last_seen requires time_id on the nrf24_bthome hub "
+                    "(add e.g. a 'time: - platform: homeassistant' component "
+                    "and reference it via time_id)"
+                )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _require_hub_time_id
 
 
 async def to_code(config):

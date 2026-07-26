@@ -60,7 +60,7 @@ class NRF24BTHomeHub : public Component,
   GPIOPin *ce_pin_{nullptr};
   uint8_t channel_{100};
   std::array<uint8_t, 5> address_{{'B', 'T', 'H', 'M', 'E'}};
-  uint32_t watchdog_timeout_{30000};
+  uint32_t watchdog_timeout_{300000};  // overwritten by codegen; keep in sync with the 5min schema default
   uint32_t last_activity_ms_{0};       // last received frame or (re-)init
   uint32_t last_timeout_check_ms_{0};  // throttle for the per-device offline sweep
   bool chip_ok_{false};
@@ -111,8 +111,8 @@ class NRF24BTHomeDevice {
   // Publishes configuration-known values (sender ID); called once by the hub.
   void publish_static_info();
 
-  // Called periodically by the hub to flip the connectivity sensor to
-  // offline after the quiet period.
+  // Called periodically by the hub: after the quiet period it ages out the
+  // packet-id dedup state and flips the connectivity sensor to offline.
   void check_timeout(uint32_t now_ms);
 
  protected:
