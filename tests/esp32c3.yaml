@@ -36,11 +36,15 @@ time:
   - platform: homeassistant
     id: ha_time
 
-nrf24_bthome:
+nrf24:
   cs_pin: GPIO8
   ce_pin: GPIO7
   channel: 100
-  address: "BTHME"
+  air_data_rate: 250kbps
+  pipes:
+    - address: "BTHME"
+
+nrf24_bthome:
   time_id: ha_time
   devices:
     - id: remote1

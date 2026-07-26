@@ -4,7 +4,7 @@
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
 #include "esphome/core/hal.h"
-#include "esphome/components/spi/spi.h"
+#include "esphome/components/nrf24/nrf24.h"
 #ifdef USE_SENSOR
 #include "esphome/components/sensor/sensor.h"
 #endif
@@ -29,17 +29,12 @@ class NRF24BTHomeDevice;
 
 // Receives BTHome-over-nRF24 broadcasts: frames of
 // [4-byte sender ID][BTHome v2 service data] sent NO_ACK to a shared
-// broadcast address. Talks to the nRF24L01 directly over ESPHome's SPI
-// abstraction (RX only), so it works on both the arduino and esp-idf
-// frameworks without the RF24 library.
-class NRF24BTHomeHub : public Component,
-                       public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW,
-                                             spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_4MHZ> {
+// broadcast address. The radio itself is owned by the generic nrf24
+// component; this hub is a frame listener that decodes BTHome and routes
+// to the registered devices.
+class NRF24BTHomeHub : public Component, public nrf24::NRF24Listener {
  public:
-  void set_ce_pin(GPIOPin *pin) { this->ce_pin_ = pin; }
-  void set_channel(uint8_t channel) { this->channel_ = channel; }
-  void set_address(const std::vector<uint8_t> &address);
-  void set_watchdog_timeout(uint32_t timeout_ms) { this->watchdog_timeout_ = timeout_ms; }
+  void set_nrf24_parent(nrf24::NRF24Hub *parent) { this->parent_ = parent; }
   void register_device(NRF24BTHomeDevice *device) { this->devices_.push_back(device); }
 
   void setup() override;
@@ -47,23 +42,11 @@ class NRF24BTHomeHub : public Component,
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::DATA; }
 
- protected:
-  void radio_init_();
-  uint8_t read_register_(uint8_t reg);
-  void write_register_(uint8_t reg, uint8_t value);
-  void write_register_(uint8_t reg, const uint8_t *data, size_t len);
-  void command_(uint8_t cmd);
-  uint8_t read_payload_width_();
-  void read_payload_(uint8_t *data, uint8_t len);
-  void handle_frame_(const uint8_t *frame, uint8_t len);
+  void on_nrf24_frame(uint8_t pipe, const uint8_t *data, uint8_t len) override;
 
-  GPIOPin *ce_pin_{nullptr};
-  uint8_t channel_{100};
-  std::array<uint8_t, 5> address_{{'B', 'T', 'H', 'M', 'E'}};
-  uint32_t watchdog_timeout_{300000};  // overwritten by codegen; keep in sync with the 5min schema default
-  uint32_t last_activity_ms_{0};       // last received frame or (re-)init
+ protected:
+  nrf24::NRF24Hub *parent_{nullptr};
   uint32_t last_timeout_check_ms_{0};  // throttle for the per-device offline sweep
-  bool chip_ok_{false};
   std::vector<NRF24BTHomeDevice *> devices_;
 };
 

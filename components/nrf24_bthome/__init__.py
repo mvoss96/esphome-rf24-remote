@@ -1,24 +1,15 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome import automation, pins
-from esphome.components import spi, time
-from esphome.const import (
-    CONF_ADDRESS,
-    CONF_CHANNEL,
-    CONF_ID,
-    CONF_TIME_ID,
-    CONF_TIMEOUT,
-    CONF_TRIGGER_ID,
-)
+from esphome import automation
+from esphome.components import nrf24, time
+from esphome.const import CONF_ID, CONF_TIME_ID, CONF_TIMEOUT, CONF_TRIGGER_ID
 
 CODEOWNERS = ["@mvoss96"]
-DEPENDENCIES = ["spi"]
+DEPENDENCIES = ["nrf24"]
 MULTI_CONF = True
 
 nrf24_bthome_ns = cg.esphome_ns.namespace("nrf24_bthome")
-NRF24BTHomeHub = nrf24_bthome_ns.class_(
-    "NRF24BTHomeHub", cg.Component, spi.SPIDevice
-)
+NRF24BTHomeHub = nrf24_bthome_ns.class_("NRF24BTHomeHub", cg.Component)
 NRF24BTHomeDevice = nrf24_bthome_ns.class_("NRF24BTHomeDevice")
 ButtonTrigger = nrf24_bthome_ns.class_(
     "ButtonTrigger", automation.Trigger.template(cg.uint8, cg.std_string)
@@ -27,45 +18,17 @@ DimmerTrigger = nrf24_bthome_ns.class_(
     "DimmerTrigger", automation.Trigger.template(cg.uint8, cg.int_)
 )
 
-CONF_CE_PIN = "ce_pin"
+CONF_NRF24_ID = "nrf24_id"
 CONF_DEVICES = "devices"
 CONF_SENDER_ID = "sender_id"
 CONF_ON_BUTTON = "on_button"
 CONF_ON_DIMMER = "on_dimmer"
-CONF_WATCHDOG_TIMEOUT = "watchdog_timeout"
 
 BTHOME_CPP_VERSION = "0.4.0"  # PlatformIO registry: mvoss96/bthome-cpp
 
 
-def _hex_bytes(value, count, what):
-    """Accepts 'AA:BB:..' hex notation or, for the address, a short ASCII string."""
-    value = cv.string_strict(value)
-    if ":" in value:
-        parts = value.split(":")
-        if len(parts) != count:
-            raise cv.Invalid(f"{what} must have {count} bytes")
-        # Plain 1-2 hex digits only: int(p, 16) alone would also accept
-        # signs, '0x' prefixes, whitespace and values > 0xFF, deferring the
-        # failure to a narrowing error in the generated C++.
-        for p in parts:
-            if not 1 <= len(p) <= 2 or any(c not in "0123456789abcdefABCDEF" for c in p):
-                raise cv.Invalid(f"{what}: '{p}' is not a hex byte (00-FF)")
-        return [int(p, 16) for p in parts]
-    if len(value) == count:
-        if any(ord(c) > 255 for c in value):
-            raise cv.Invalid(f"{what}: only single-byte (Latin-1) characters allowed")
-        return [ord(c) for c in value]
-    raise cv.Invalid(
-        f"{what} must be {count} hex bytes ('AA:BB:...') or a {count}-char string"
-    )
-
-
 def _sender_id(value):
-    return _hex_bytes(value, 4, "sender_id")
-
-
-def _address(value):
-    return _hex_bytes(value, 5, "address")
+    return nrf24.hex_bytes(value, 4, "sender_id")
 
 
 DEVICE_SCHEMA = cv.Schema(
@@ -85,38 +48,24 @@ DEVICE_SCHEMA = cv.Schema(
     }
 )
 
-CONFIG_SCHEMA = (
-    cv.Schema(
-        {
-            cv.GenerateID(): cv.declare_id(NRF24BTHomeHub),
-            cv.Required(CONF_CE_PIN): pins.gpio_output_pin_schema,
-            cv.Optional(CONF_CHANNEL, default=100): cv.int_range(min=0, max=125),
-            cv.Optional(CONF_ADDRESS, default="BTHME"): _address,
-            # Should comfortably exceed the senders' status interval, or the
-            # radio re-inits (harmlessly but pointlessly) between packets.
-            cv.Optional(
-                CONF_WATCHDOG_TIMEOUT, default="5min"
-            ): cv.positive_time_period_milliseconds,
-            # Time source for the devices' last_seen timestamp sensors.
-            cv.Optional(CONF_TIME_ID): cv.use_id(time.RealTimeClock),
-            cv.Optional(CONF_DEVICES, default=[]): cv.ensure_list(DEVICE_SCHEMA),
-        }
-    )
-    .extend(cv.COMPONENT_SCHEMA)
-    .extend(spi.spi_device_schema(cs_pin_required=True))
-)
+CONFIG_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(): cv.declare_id(NRF24BTHomeHub),
+        # The radio this receiver listens on; configured via the nrf24 component.
+        cv.GenerateID(CONF_NRF24_ID): cv.use_id(nrf24.NRF24Hub),
+        # Time source for the devices' last_seen timestamp sensors.
+        cv.Optional(CONF_TIME_ID): cv.use_id(time.RealTimeClock),
+        cv.Optional(CONF_DEVICES, default=[]): cv.ensure_list(DEVICE_SCHEMA),
+    }
+).extend(cv.COMPONENT_SCHEMA)
 
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
-    await spi.register_spi_device(var, config)
 
-    ce_pin = await cg.gpio_pin_expression(config[CONF_CE_PIN])
-    cg.add(var.set_ce_pin(ce_pin))
-    cg.add(var.set_channel(config[CONF_CHANNEL]))
-    cg.add(var.set_address(config[CONF_ADDRESS]))
-    cg.add(var.set_watchdog_timeout(config[CONF_WATCHDOG_TIMEOUT]))
+    parent = await cg.get_variable(config[CONF_NRF24_ID])
+    cg.add(var.set_nrf24_parent(parent))
 
     rtc = None
     if CONF_TIME_ID in config:
