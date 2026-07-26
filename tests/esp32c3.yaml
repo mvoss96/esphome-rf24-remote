@@ -37,17 +37,26 @@ time:
     id: ha_time
 
 nrf24:
+  id: radio
   cs_pin: GPIO8
   ce_pin: GPIO7
   irq_pin: GPIO9
   channel: 100
   air_data_rate: 250kbps
+  # Pipes 2-5 share all but the first address byte with pipe 1, so these
+  # differ only in the leading character.
   pipes:
     - address: "BTHME"
+    - address: "XTHME"
+    - address: "YTHME"
 
+# Two listeners on one radio: every frame is offered to both, which is what
+# a second protocol component would do alongside this one.
 nrf24_bthome:
-  time_id: ha_time
-  devices:
+  - id: bthome_main
+    nrf24_id: radio
+    time_id: ha_time
+    devices:
     - id: remote1
       sender_id: "B7:4F:E7:7F"
       timeout: 3min  # remote currently sends status every ~1min (test build)
@@ -83,6 +92,25 @@ nrf24_bthome:
                   const float ct = id(test_led).remote_values.get_color_temperature();
                   call.set_color_temperature(clamp(ct + steps * 15.0f, 153.0f, 370.0f));
                   call.perform();
+
+    # A second remote on the same listener: routing by sender id, not just
+    # "the one device that is configured".
+    - id: remote2
+      sender_id: "AA:BB:CC:DD"
+      on_button:
+        - logger.log:
+            format: "remote2 button %u: %s"
+            args: [button, event.c_str()]
+
+  - id: bthome_second
+    nrf24_id: radio
+    devices:
+    - id: remote3
+      sender_id: "11:22:33:44"
+      on_button:
+        - logger.log:
+            format: "remote3 button %u: %s"
+            args: [button, event.c_str()]
 
 # Virtual CCT light on free pins (no physical LEDs needed): state is visible
 # and controllable in Home Assistant, driven by the remote via the automations.
