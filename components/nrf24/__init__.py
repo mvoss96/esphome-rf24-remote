@@ -131,6 +131,28 @@ def _validate_radio(config):
     """
     for index, pipe in enumerate(config[CONF_PIPES]):
         payload_size, auto_ack = pipe_settings(config, pipe)
+        if payload_size != PAYLOAD_DYNAMIC and auto_ack:
+            raise cv.Invalid(
+                f"pipe {index + 1}: a fixed payload_size requires auto_ack: false.\n"
+                "\n"
+                "Measured on the modules this component is used with, not taken "
+                "from the datasheet - which says nothing about this combination. "
+                "A pipe with a fixed payload size and auto-ack enabled receives "
+                "NOTHING: the sender's chip reports every frame as transmitted "
+                "and not one of them is decoded. Reproduced by toggling EN_AA "
+                "with everything else untouched, on the receiving side and on "
+                "the transmitting side alike - 0x00 receives, auto-ack on does "
+                "not - while in dynamic mode the same bit is harmless.\n"
+                "\n"
+                "Likely another face of the inverted NO_ACK bit these Si24R1 "
+                "clones carry. Rejected here rather than left to be discovered, "
+                "because the failure is silent: a pipe configured this way is "
+                "simply deaf, with nothing in any log to say so.\n"
+                "\n"
+                "Auto-acknowledgement is no loss here - it is what a receiver "
+                "for a broadcast protocol should not be doing anyway.",
+                path=[CONF_AUTO_ACK],
+            )
         if payload_size != PAYLOAD_DYNAMIC or auto_ack:
             continue
         raise cv.Invalid(
