@@ -125,6 +125,18 @@ sensor:
       name: "Remote 1 Voltage"
     last_seen:
       name: "Remote 1 Last Seen"
+    # Three shapes of measurement mapping, so the generated code for all of them
+    # is compiled: one with a unit and a device class, one with neither, and one
+    # addressing an instance other than the first.
+    temperature:
+      name: "Remote 1 Temperature"
+    count:
+      name: "Remote 1 Count"
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    temperature:
+      name: "Remote 1 Temperature 2"
+      index: 2
 
 binary_sensor:
   - platform: nrf24_bthome

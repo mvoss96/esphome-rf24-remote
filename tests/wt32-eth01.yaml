@@ -119,6 +119,14 @@ nrf24_bthome:
       sender_id: "AA:01:00:03"
       timeout: 30s  # broadcasts every 5 s
 
+    # Every mapped sensor type at once, played by dongle A. Nothing sends to it
+    # outside the bench, hence the long timeout - it exists so each row of the
+    # SENSOR_TYPES table has an entity to publish into, and the log then says
+    # what value, unit and accuracy that row produced.
+    - id: type_probe
+      sender_id: "AA:01:00:04"
+      timeout: 1h
+
     - id: dongle_b
       sender_id: "AA:01:00:02"
       timeout: 15s
@@ -192,6 +200,102 @@ sensor:
       name: "Sensor Node Humidity"
     last_seen:
       name: "Sensor Node Last Seen"
+
+  # Every mapped type at once. The entity name is the YAML key verbatim so the
+  # radio bench can derive it from the same table it takes its vectors from -
+  # a renamed entity would otherwise quietly stop being checked. All internal:
+  # these exist to be read off the log, not to appear in Home Assistant.
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: type_probe
+    battery:
+      name: "P battery"
+      internal: true
+    temperature:
+      name: "P temperature"
+      internal: true
+    humidity:
+      name: "P humidity"
+      internal: true
+    pressure:
+      name: "P pressure"
+      internal: true
+    illuminance:
+      name: "P illuminance"
+      internal: true
+    mass:
+      name: "P mass"
+      internal: true
+    dewpoint:
+      name: "P dewpoint"
+      internal: true
+    count:
+      name: "P count"
+      internal: true
+    energy:
+      name: "P energy"
+      internal: true
+    power:
+      name: "P power"
+      internal: true
+    voltage:
+      name: "P voltage"
+      internal: true
+    pm2_5:
+      name: "P pm2_5"
+      internal: true
+    pm10:
+      name: "P pm10"
+      internal: true
+    co2:
+      name: "P co2"
+      internal: true
+    tvoc:
+      name: "P tvoc"
+      internal: true
+    moisture:
+      name: "P moisture"
+      internal: true
+    rotation:
+      name: "P rotation"
+      internal: true
+    distance_mm:
+      name: "P distance_mm"
+      internal: true
+    distance_m:
+      name: "P distance_m"
+      internal: true
+    duration:
+      name: "P duration"
+      internal: true
+    current:
+      name: "P current"
+      internal: true
+    speed:
+      name: "P speed"
+      internal: true
+    uv_index:
+      name: "P uv_index"
+      internal: true
+    volume:
+      name: "P volume"
+      internal: true
+    gas:
+      name: "P gas"
+      internal: true
+    conductivity:
+      name: "P conductivity"
+      internal: true
+    precipitation:
+      name: "P precipitation"
+      internal: true
+  # A second sensor for the same object id: index 2 takes the second
+  # temperature in a payload, which needs its own platform entry.
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: type_probe
+    temperature:
+      name: "P temperature 2"
+      index: 2
+      internal: true
 
 binary_sensor:
   - platform: nrf24_bthome

@@ -301,6 +301,45 @@ check("R23 watchdog_timeout 0s (disabled) validates",
     - address: "BTHME"
 """)
 
+# ---- the measurement types --------------------------------------------------
+PROBE_DEVICE = GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+"""
+
+check("R24 a measurement type the component does not map is refused",
+      PROBE_DEVICE + """    luminous_flux:
+      name: X
+""", ANY)
+
+check("R25 index 0 is refused - instances are counted from one",
+      PROBE_DEVICE + """    temperature:
+      name: X
+      index: 0
+""", ANY)
+
+check("R26 an index past the last countable instance is refused",
+      PROBE_DEVICE + """    temperature:
+      name: X
+      index: 9
+""", ANY)
+
+# Every type at once, generated from the same table the benches use. It fails on
+# a row whose schema cannot be built at all - which is not hypothetical: passing
+# entity_category=None explicitly rather than leaving it out made esphome
+# validate None as a string, and only a config run says so.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sensor_type_vectors import VECTORS  # noqa: E402
+
+check(f"R27 all {len(VECTORS)} mapped measurement types validate on one device",
+      PROBE_DEVICE + "".join(f'    {key}:\n      name: "P {key}"\n'
+                             for key, *_ in VECTORS))
+
 print("\n--- summary ---")
 for name, ok, detail in results:
     print(f"{'PASS' if ok else 'FAIL'}  {name}")

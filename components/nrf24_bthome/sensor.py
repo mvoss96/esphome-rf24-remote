@@ -119,8 +119,10 @@ SENSOR_TYPES = {
     CONF_CURRENT: (0x43, UNIT_AMPERE, DEVICE_CLASS_CURRENT, 3, STATE_CLASS_MEASUREMENT),
     CONF_SPEED: (0x44, UNIT_METER_PER_SECOND, DEVICE_CLASS_SPEED, 2, STATE_CLASS_MEASUREMENT),
     "uv_index": (0x46, None, None, 1, STATE_CLASS_MEASUREMENT),
-    # esphome has no UNIT_LITER constant; the symbol is the unit.
-    "volume": (0x47, "L", DEVICE_CLASS_VOLUME, 3, STATE_CLASS_MEASUREMENT),
+    # esphome has no UNIT_LITER constant; the symbol is the unit. One decimal,
+    # not three: the object is scaled by 0.1, so the further places would be
+    # zeros the sender never measured.
+    "volume": (0x47, "L", DEVICE_CLASS_VOLUME, 1, STATE_CLASS_MEASUREMENT),
     "gas": (0x4B, UNIT_CUBIC_METER, DEVICE_CLASS_GAS, 3, STATE_CLASS_TOTAL_INCREASING),
     "conductivity": (
         0x56, UNIT_MICROSIEMENS_PER_CENTIMETER, None, 0, STATE_CLASS_MEASUREMENT),
