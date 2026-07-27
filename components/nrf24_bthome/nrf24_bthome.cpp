@@ -169,6 +169,11 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
     slot.has_pending = false;
   }
 #endif
+#ifdef USE_TEXT_SENSOR
+  for (auto &slot : this->object_text_sensors_) {
+    slot.has_pending = false;
+  }
+#endif
 
   BTHome::Decoded obj;
   while (decoder.next(obj)) {
@@ -224,9 +229,28 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
 #endif
         break;
       }
-      case BTHome::ObjectKind::Text: {
-        pending.name = obj.bytes;
-        pending.name_len = obj.length;
+      case BTHome::ObjectKind::Text:
+      case BTHome::ObjectKind::Raw: {
+        const bool is_text = obj.kind == BTHome::ObjectKind::Text;
+        const uint8_t instance = instance_of(obj.object_id);
+        ESP_LOGV(TAG, "%s: %s 0x%02X#%u: %u bytes", this->sender_id_text_,
+                 is_text ? "text" : "raw", obj.object_id, instance,
+                 static_cast<unsigned>(obj.length));
+        // The device name is the first text object, which is what senders use
+        // 0x53 for; further ones need a text_sensor of their own.
+        if (is_text && instance == 1) {
+          pending.name = obj.bytes;
+          pending.name_len = obj.length;
+        }
+#ifdef USE_TEXT_SENSOR
+        for (auto &slot : this->object_text_sensors_) {
+          if (slot.object_id == obj.object_id && slot.index == instance) {
+            slot.has_pending = true;
+            slot.bytes = obj.bytes;
+            slot.length = obj.length;
+          }
+        }
+#endif
         break;
       }
       case BTHome::ObjectKind::DeviceTypeId: {
@@ -332,6 +356,32 @@ void NRF24BTHomeDevice::commit_(const Pending &pending) {
 #endif
 
 #ifdef USE_TEXT_SENSOR
+  for (auto &slot : this->object_text_sensors_) {
+    if (!slot.has_pending || slot.sensor == nullptr) {
+      continue;
+    }
+    std::string value;
+    if (slot.object_id == static_cast<uint8_t>(BTHome::ObjectId::Raw)) {
+      // Raw is bytes, not characters: a zero in the middle would end a string
+      // and anything above 0x7F is not printable. Hex, uppercase and without
+      // separators - the form the frame itself is written in.
+      static const char HEX[] = "0123456789ABCDEF";
+      value.reserve(static_cast<size_t>(slot.length) * 2);
+      for (uint8_t i = 0; i < slot.length; i++) {
+        value.push_back(HEX[slot.bytes[i] >> 4]);
+        value.push_back(HEX[slot.bytes[i] & 0x0F]);
+      }
+    } else {
+      value.assign(reinterpret_cast<const char *>(slot.bytes), slot.length);
+    }
+    // Only on change, as the device name already was: a text object is a
+    // sender's identity far more often than a reading, and republishing the
+    // same string with every broadcast fills the recorder with nothing.
+    if (!slot.sensor->has_state() || slot.sensor->state != value) {
+      slot.sensor->publish_state(value);
+    }
+  }
+
   if (pending.name != nullptr && this->name_text_sensor_ != nullptr) {
     const std::string name(reinterpret_cast<const char *>(pending.name), pending.name_len);
     if (!this->name_text_sensor_->has_state() || this->name_text_sensor_->state != name) {

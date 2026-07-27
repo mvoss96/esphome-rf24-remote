@@ -135,6 +135,19 @@ BINARY_VECTORS = [
 ]
 
 
+# The two variable-length objects, [length][bytes] on the wire. `payload` is
+# what follows the id, `shown` what the entity is expected to publish - text as
+# characters, raw as hex, because raw bytes are not a string.
+TEXT_VECTORS = [
+    # key     id    payload                     shown
+    ("text",  0x53, "0A" + "6C61622D73656E736F72", "lab-sensor"),
+    ("raw",   0x54, "04DEADBEEF",                  "DEADBEEF"),
+    # A raw value with a zero in the middle and a byte above 0x7F: read as a
+    # string this would come out cut short and mangled.
+    ("raw",   0x54, "0400FF0041",                  "00FF0041"),
+]
+
+
 def encoded(object_id, value_bytes):
     """The object as it appears in a BTHome payload: id byte, then the value."""
     return f"{object_id:02X}{value_bytes}"

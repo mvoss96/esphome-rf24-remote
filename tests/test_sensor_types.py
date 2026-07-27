@@ -42,6 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sensor_type_vectors import (  # noqa: E402
     BINARY_VECTORS,
+    TEXT_VECTORS,
     all_vectors,
     encoded,
 )
@@ -156,13 +157,17 @@ def run_probe(exe, payloads):
                 "signed": parts[4] == "1", "factor": float(parts[5])}
         elif parts[0] == "FRAME":
             frame = frames.setdefault(
-                int(parts[1]), {"sensors": [], "binaries": [], "status": None})
+                int(parts[1]),
+                {"sensors": [], "binaries": [], "bytes": [], "status": None})
             if parts[2] == "SENSOR":
                 frame["sensors"].append(
                     (int(parts[3], 16), int(parts[4]), float(parts[5])))
             elif parts[2] == "BINARY":
                 frame["binaries"].append(
                     (int(parts[3], 16), int(parts[4]), parts[5] == "1"))
+            elif parts[2] == "BYTES":
+                frame["bytes"].append(
+                    (int(parts[3], 16), int(parts[4]), "" if parts[5] == "-" else parts[5]))
             else:
                 frame["status"] = (parts[3], int(parts[4], 16))
     return layouts, frames
@@ -218,6 +223,8 @@ def main():
     payloads = [HDR + encoded(oid, b) for _, oid, _, b, _, _, _ in vectors]
     first_binary = len(payloads) + 1
     payloads += [HDR + encoded(oid, b) for _, oid, b, _ in BINARY_VECTORS]
+    first_text = len(payloads) + 1
+    payloads += [HDR + encoded(oid, b) for _, oid, b, _ in TEXT_VECTORS]
     # Two objects of one id in one payload: the second must be instance 2 rather
     # than overwrite the first.
     instance_frame = len(payloads) + 1
@@ -255,6 +262,10 @@ def main():
                 twice.append(f"0x{oid:02X}: {seen[oid]} and {key}")
             seen[oid] = key
     for key, (oid, _) in binaries.items():
+        if oid in seen:
+            twice.append(f"0x{oid:02X}: {seen[oid]} and {key}")
+        seen[oid] = key
+    for key, oid in parse_table("text_sensor.py", "TEXT_TYPES").items():
         if oid in seen:
             twice.append(f"0x{oid:02X}: {seen[oid]} and {key}")
         seen[oid] = key
@@ -302,8 +313,9 @@ def main():
             "; ".join(bad_value) or f"{len(vectors)} vectors decoded, sign and scale intact")
 
     # --- V7: every payload ends cleanly ----------------------------------------
+    # Every payload but the padded one, which stops on the padding by design.
     bad_status = [f"{payloads[n - 1]}: {frames[n]['status']}"
-                  for n in range(1, len(payloads) - 1)
+                  for n in range(1, padded_frame)
                   if frames.get(n, {}).get("status", ("?",))[0] != "End"]
     verdict("V7 no vector leaves bytes over or trips the decoder",
             not bad_status, "; ".join(bad_status) or "all payloads reach End")
@@ -368,6 +380,25 @@ def main():
             not bad_binary and not no_vector,
             "; ".join(bad_binary + no_vector)
             or f"{len(binaries)} binary types, {len(BINARY_VECTORS)} vectors, both states seen")
+
+    # --- V11b: text and raw -----------------------------------------------------
+    # Both are [length][bytes], so what a vector proves is that the announced
+    # length is honoured and that the bytes arrive unaltered - a raw value with a
+    # zero in the middle is where reading it as a string goes wrong.
+    texts = parse_table("text_sensor.py", "TEXT_TYPES")
+    bad_text = []
+    for offset, (key, oid, _, shown) in enumerate(TEXT_VECTORS):
+        got = [b for i, _, b in frames.get(first_text + offset, {}).get("bytes", [])
+               if i == oid]
+        want = shown.encode().hex().upper() if key == "text" else shown
+        if got != [want]:
+            bad_text.append(f"{key} 0x{oid:02X}: expected {want}, decoded {got or 'nothing'}")
+    wrong_map = [f"{k}: table 0x{v:02X}" for k, v in texts.items()
+                 if layouts.get(v, {}).get("kind") != ("Text" if k == "text" else "Raw")]
+    verdict("V11b text and raw arrive with their bytes intact",
+            not bad_text and not wrong_map,
+            "; ".join(bad_text + wrong_map)
+            or f"{len(TEXT_VECTORS)} vectors over {sorted(texts)}")
 
     # --- V12: instances ---------------------------------------------------------
     inst = frames.get(instance_frame, {}).get("sensors", [])

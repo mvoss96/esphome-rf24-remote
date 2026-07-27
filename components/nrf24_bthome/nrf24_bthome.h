@@ -87,6 +87,12 @@ class NRF24BTHomeDevice {
 #endif
 #ifdef USE_TEXT_SENSOR
   void set_name_text_sensor(text_sensor::TextSensor *s) { this->name_text_sensor_ = s; }
+  // BTHome's text (0x53) and raw (0x54) objects, both [length][bytes]. Text goes
+  // through as characters, raw as hex - the bytes are not a string and printing
+  // them as one would cut the value at the first zero.
+  void add_object_text_sensor(uint8_t object_id, uint8_t index, text_sensor::TextSensor *s) {
+    this->object_text_sensors_.push_back(ObjectTextSensor{object_id, index, s, false, nullptr, 0});
+  }
   void set_firmware_text_sensor(text_sensor::TextSensor *s) { this->firmware_text_sensor_ = s; }
   void set_sender_id_text_sensor(text_sensor::TextSensor *s) { this->sender_id_text_sensor_ = s; }
 #endif
@@ -180,6 +186,17 @@ class NRF24BTHomeDevice {
   text_sensor::TextSensor *name_text_sensor_{nullptr};
   text_sensor::TextSensor *firmware_text_sensor_{nullptr};
   text_sensor::TextSensor *sender_id_text_sensor_{nullptr};
+  struct ObjectTextSensor {
+    uint8_t object_id;
+    uint8_t index;  // 1-based occurrence of that object id within one payload
+    text_sensor::TextSensor *sensor;
+    bool has_pending;
+    // Into the caller's frame buffer, which outlives the parse: read once in
+    // commit_(), which still runs inside handle_service_data().
+    const uint8_t *bytes;
+    uint8_t length;
+  };
+  std::vector<ObjectTextSensor> object_text_sensors_;
 #endif
 #ifdef USE_BINARY_SENSOR
   binary_sensor::BinarySensor *connected_sensor_{nullptr};

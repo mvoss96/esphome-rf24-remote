@@ -356,6 +356,41 @@ binary_sensor:
     nrf24_bthome_device_id: r1
 """ + "".join(f'    {key}:\n      name: "B {key}"\n' for key in BINARY_KEYS))
 
+check("R30 text and raw validate, including a second instance",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+text_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+    device_name:
+      name: N
+    text:
+      name: T
+    raw:
+      name: R
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+    text:
+      name: T2
+      index: 2
+""")
+
+check("R31 a text key the component does not map is refused",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+text_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+    comment:
+      name: X
+""", ANY)
+
 check("R29 a binary type the component does not map is refused",
       GOOD_HUB + """
 nrf24_bthome:

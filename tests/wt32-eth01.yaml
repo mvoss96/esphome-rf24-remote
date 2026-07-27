@@ -489,3 +489,19 @@ text_sensor:
       name: "Remote 1 Firmware"
     sender_id:
       name: "Remote 1 Sender ID"
+  # The two variable-length objects, plus a second text instance. Same naming
+  # rule as the other probe entities.
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: type_probe
+    text:
+      name: "P text"
+      internal: true
+    raw:
+      name: "P raw"
+      internal: true
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: type_probe
+    text:
+      name: "P text 2"
+      index: 2
+      internal: true

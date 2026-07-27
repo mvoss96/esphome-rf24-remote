@@ -160,3 +160,9 @@ text_sensor:
       name: "Remote 1 Firmware"
     sender_id:
       name: "Remote 1 Sender ID"
+    # The two variable-length objects: text goes through as characters, raw as
+    # hex, and both paths are generated from here.
+    text:
+      name: "Remote 1 Text"
+    raw:
+      name: "Remote 1 Raw"

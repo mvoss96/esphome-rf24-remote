@@ -122,6 +122,14 @@ int main() {
       } else if (obj.kind == BTHome::ObjectKind::Binary) {
         std::printf("FRAME %u BINARY 0x%02X %u %u\n", frame, obj.object_id,
                     instance_of(obj.object_id), obj.raw != 0 ? 1u : 0u);
+      } else if (obj.kind == BTHome::ObjectKind::Text ||
+                 obj.kind == BTHome::ObjectKind::Raw) {
+        // As hex for both kinds: the test compares bytes, and going through a
+        // string here would lose exactly what the raw object exists to carry.
+        std::printf("FRAME %u BYTES 0x%02X %u ", frame, obj.object_id,
+                    instance_of(obj.object_id));
+        for (uint8_t i = 0; i < obj.length; i++) std::printf("%02X", obj.bytes[i]);
+        std::printf("%s\n", obj.length == 0 ? "-" : "");
       }
     }
     // The object id goes out with the status because it is what decides the
