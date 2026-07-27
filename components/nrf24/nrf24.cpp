@@ -27,6 +27,7 @@ static const uint8_t REG_STATUS = 0x07;
 static const uint8_t REG_RPD = 0x09;  // received power detector (carrier > ~-64 dBm)
 static const uint8_t REG_RX_ADDR_P1 = 0x0B;
 static const uint8_t REG_RX_ADDR_P2 = 0x0C;  // P3-P5 follow contiguously
+static const uint8_t REG_RX_PW_P1 = 0x12;    // P2-P5 follow contiguously
 static const uint8_t REG_FIFO_STATUS = 0x17;
 static const uint8_t REG_DYNPD = 0x1C;
 static const uint8_t REG_FEATURE = 0x1D;
@@ -75,18 +76,19 @@ void NRF24Hub::radio_init_() {
   }
 
   this->write_register_(REG_CONFIG, CONFIG_STANDBY);
-  // ENAA must stay set on RX pipes: the datasheet gates dynamic payload length on
-  // auto-ack being enabled for the pipe.
+  // Auto acknowledgement, per pipe. Configurable, but not freely: with dynamic
+  // payload length the datasheet requires it (Table 28, DYNPD, page 63 - "Requires
+  // EN_DPL and ENAA_Pn"), and the config schema rejects that combination before
+  // it can reach the chip. Measured consequence of getting it wrong on these
+  // modules: payloads shorter than 32 bytes delivered twice, the second copy
+  // carrying an older payload, so one click fired three button events.
   //
-  // Tried turning it off, because on these modules the NO_ACK bit is inverted and
-  // a receiver with auto-ack answers even broadcasts - measured on the air as a
-  // 1-byte frame behind the broadcast, which is pollution nobody asked for. It is
-  // not worth it: with EN_AA=0 this receiver starts handing out payloads shorter
-  // than 32 bytes twice, the second copy carrying an older payload, and a stale
-  // copy with a different packet id passes the dedup and fires a button event
-  // that never happened. Measured on one device minutes apart - three "Button 1:
-  // press" for a single click with auto-ack off, exactly one with it on.
-  this->write_register_(REG_EN_AA, pipe_mask);
+  // With a fixed payload size it is a real choice, and off is the better one for
+  // a broadcast network: on these modules the NO_ACK bit is inverted, so a
+  // receiver with auto-ack answers even frames flagged NO_ACK - captured on the
+  // air as a 1-byte frame behind the broadcast, landing on top of the traffic
+  // every other receiver is trying to hear.
+  this->write_register_(REG_EN_AA, this->auto_ack_ ? pipe_mask : 0x00);
   this->write_register_(REG_EN_RXADDR, pipe_mask);
   this->write_register_(REG_SETUP_AW, 0x03);    // 5-byte addresses
   this->write_register_(REG_SETUP_RETR, 0x00);  // no auto-retransmit (RX only)
@@ -110,17 +112,29 @@ void NRF24Hub::radio_init_() {
     }
   }
 
-  // Dynamic payload lengths; some clones need the ACTIVATE handshake before
-  // FEATURE becomes writable, so verify and retry once.
-  this->write_register_(REG_FEATURE, 0x04);  // EN_DPL
-  if (this->read_register_(REG_FEATURE) != 0x04) {
-    this->enable();
-    this->transfer_byte(CMD_ACTIVATE);
-    this->transfer_byte(0x73);
-    this->disable();
-    this->write_register_(REG_FEATURE, 0x04);
+  if (this->payload_size_ == 0) {
+    // Dynamic payload lengths; some clones need the ACTIVATE handshake before
+    // FEATURE becomes writable, so verify and retry once.
+    this->write_register_(REG_FEATURE, 0x04);  // EN_DPL
+    if (this->read_register_(REG_FEATURE) != 0x04) {
+      this->enable();
+      this->transfer_byte(CMD_ACTIVATE);
+      this->transfer_byte(0x73);
+      this->disable();
+      this->write_register_(REG_FEATURE, 0x04);
+    }
+    this->write_register_(REG_DYNPD, pipe_mask);
+  } else {
+    // Static payload length: the size lives on the receiver, in RX_PW_Pn, and
+    // has to match what the sender clocks into its TX FIFO (spec section 7.3.4,
+    // page 29). Nothing here asks the chip how long a payload is, which is the
+    // point - it is the one length question these modules answer unreliably.
+    this->write_register_(REG_FEATURE, 0x00);
+    this->write_register_(REG_DYNPD, 0x00);
+    for (size_t i = 0; i < this->pipes_.size() && i < 5; i++) {
+      this->write_register_(REG_RX_PW_P1 + i, this->payload_size_);
+    }
   }
-  this->write_register_(REG_DYNPD, pipe_mask);
 
   this->write_register_(REG_STATUS, STATUS_CLEAR);
   this->command_(CMD_FLUSH_RX);
@@ -206,11 +220,27 @@ void NRF24Hub::drain_fifo_() {
     }
     // RX_P_NO in STATUS names the pipe of the payload at the FIFO top.
     const uint8_t pipe = (this->read_register_(REG_STATUS) >> 1) & 0x07;
-    const uint8_t len = this->read_payload_width_();
+    // With a fixed size the length is known and the chip is never asked.
+    const uint8_t len =
+        this->payload_size_ != 0 ? this->payload_size_ : this->read_payload_width_();
     if (len == 0 || len > 32) {
       // Datasheet: a corrupt width mandates flushing the RX FIFO.
+      if (this->bad_length_count_ < 0xFFFF) {
+        this->bad_length_count_++;
+      }
+      ESP_LOGW(TAG, "Chip reported a payload width of %u, flushing RX FIFO (n=%u)",
+               static_cast<unsigned>(len), static_cast<unsigned>(this->bad_length_count_));
       this->command_(CMD_FLUSH_RX);
       break;
+    }
+    if (this->rx_frames_ < 0xFFFFFFFF) {
+      this->rx_frames_++;
+    }
+    // "Short" means shorter than a slot: those are the ones this hardware
+    // mishandles, and the ones an outage loses first. Counting them separately
+    // turns "the lamp stopped reacting" into a number that can be looked at.
+    if (len < 32 && this->rx_short_frames_ < 0xFFFFFFFF) {
+      this->rx_short_frames_++;
     }
     uint8_t frame[32];
     this->read_payload_(frame, len);
@@ -267,7 +297,14 @@ void NRF24Hub::loop() {
   // re-init after a configurable quiet period. Also the safety net for a
   // missed IRQ edge when an IRQ pin is configured.
   if (this->watchdog_timeout_ > 0 && millis() - this->last_activity_ms_ > this->watchdog_timeout_) {
-    ESP_LOGV(TAG, "Watchdog: re-initializing radio");
+    if (this->watchdog_count_ < 0xFFFF) {
+      this->watchdog_count_++;
+    }
+    // Was VERBOSE, which meant the one device that could have told us how often
+    // this fires said nothing at the log level it actually runs at.
+    ESP_LOGD(TAG, "Watchdog: no frame for %u ms, re-initializing radio (n=%u)",
+             static_cast<unsigned>(this->watchdog_timeout_),
+             static_cast<unsigned>(this->watchdog_count_));
     this->radio_init_();
     if (!this->chip_ok_) {
       this->status_set_error();
@@ -292,8 +329,24 @@ void NRF24Hub::dump_config() {
     ESP_LOGCONFIG(TAG, "  Pipe %u: %02X:%02X:%02X:%02X:%02X", static_cast<unsigned>(i + 1), p[0],
                   p[1], p[2], p[3], p[4]);
   }
+  ESP_LOGCONFIG(TAG, "  Auto ack: %s", this->auto_ack_ ? "on" : "off");
+  if (this->payload_size_ == 0) {
+    ESP_LOGCONFIG(TAG, "  Payload size: dynamic");
+  } else {
+    ESP_LOGCONFIG(TAG, "  Payload size: %u bytes (fixed)",
+                  static_cast<unsigned>(this->payload_size_));
+  }
   ESP_LOGCONFIG(TAG, "  Watchdog: %u ms", static_cast<unsigned>(this->watchdog_timeout_));
   ESP_LOGCONFIG(TAG, "  Chip connected: %s", this->chip_ok_ ? "YES" : "NO");
+  // Printed on every dump_config, so `esphome logs` after a silent spell answers
+  // "did it hear anything?" without anyone having to reproduce the fault first.
+  ESP_LOGCONFIG(TAG, "  Frames: %u (%u shorter than a slot), bad length: %u, "
+                     "FIFO full: %u, watchdog: %u",
+                static_cast<unsigned>(this->rx_frames_),
+                static_cast<unsigned>(this->rx_short_frames_),
+                static_cast<unsigned>(this->bad_length_count_),
+                static_cast<unsigned>(this->fifo_full_count_),
+                static_cast<unsigned>(this->watchdog_count_));
   if (this->chip_ok_) {
     ESP_LOGCONFIG(TAG, "  Chip type: %s",
                   this->clone_suspected_ ? "Si24R1-like clone (RF_SETUP bit 0 is writable)"
