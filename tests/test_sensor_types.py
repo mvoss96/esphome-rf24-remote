@@ -232,6 +232,16 @@ def main():
     # A measurement whose last byte is 0xFF, followed by the padding of a
     # 32-byte slot (28 bytes of service data). Decoding has to reach the value
     # and then stop on the padding, not mistake the value for padding.
+    # A frame filled to capacity: twelve single-byte objects are the most the 25
+    # bytes a 32-byte slot leaves after the sender id and the header can hold.
+    # The instance counter is a fixed array, and an id past its end is never
+    # recorded - so the last id is sent twice, and an undersized array answers
+    # instance 1 for both. Distinct ids alone would not show it: instance 1 is
+    # the right answer for those either way, which is why this frame repeats one.
+    full_frame = len(payloads) + 1
+    FULL_IDS = [0x01, 0x09, 0x0F, 0x21, 0x2E, 0x2F, 0x46, 0x57, 0x58, 0x60, 0x64, 0x64]
+    payloads.append(HDR + "".join(encoded(oid, "01") for oid in FULL_IDS))
+
     padded_frame = len(payloads) + 1
     padded = HDR + encoded(0x02, "9CFF")
     padded += "FF" * (28 - len(padded) // 2)
@@ -408,6 +418,18 @@ def main():
                        for (i, n, v), (wi, wn, wv) in zip(inst, want_inst)))
     verdict("V12 a second object of the same id is instance 2, not a replacement",
             ok_inst, f"decoded {[(hex(i), n, round(v, 2)) for i, n, v in inst]}")
+
+    # --- V12b: a frame filled with distinct objects -----------------------------
+    full = frames.get(full_frame, {})
+    got_ids = [(i, n) for i, n, _ in full.get("sensors", []) + full.get("binaries", [])]
+    want_ids = [(oid, 1 + FULL_IDS[:i].count(oid)) for i, oid in enumerate(FULL_IDS)]
+    ok_full = (sorted(got_ids) == sorted(want_ids)
+               and full.get("status", ("?",))[0] == "End")
+    repeated = [n for i, n in got_ids if i == FULL_IDS[-1]]
+    verdict("V12b every object of a frame filled to capacity is counted",
+            ok_full,
+            f"{len(got_ids)}/{len(FULL_IDS)} objects, the repeated id came out as "
+            f"{sorted(repeated)} (expected [1, 2]), {full.get('status')}")
 
     # --- V13: padding -----------------------------------------------------------
     pad_frame = frames.get(padded_frame, {})

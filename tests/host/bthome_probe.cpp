@@ -98,10 +98,10 @@ int main() {
     // Instances are counted per payload and per object id, the way the
     // firmware does it: the k-th occurrence of an id addresses the sensor
     // configured with index k.
-    // Eight distinct ids, the same bound the firmware uses - a 32-byte frame
-    // cannot carry more, and a stand-in that counted further would not stand in.
-    uint8_t seen_ids[8] = {0};
-    uint8_t seen_instances[8] = {0};
+    // Twelve distinct ids, the same bound the firmware uses - a stand-in that
+    // counted further would not stand in.
+    uint8_t seen_ids[12] = {0};
+    uint8_t seen_instances[12] = {0};
     uint8_t seen_count = 0;
     auto instance_of = [&](uint8_t object_id) -> uint8_t {
       for (uint8_t i = 0; i < seen_count; i++) {

@@ -137,10 +137,14 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
   // why nothing may be published or triggered from inside this loop.
   Pending pending;
 
-  // Per-payload instance counters: how often each sensor object id has been
-  // seen so far. Eight distinct ids is more than a 32-byte frame can carry.
-  uint8_t seen_ids[8] = {};
-  uint8_t seen_instances[8] = {};
+  // Per-payload instance counters: how often each object id has been seen so
+  // far. Twelve is the most a frame can carry - a 32-byte slot leaves 25 bytes
+  // of objects after the sender id and the BTHome header, and the smallest
+  // object is two bytes. It used to be eight, on the belief that a frame could
+  // not hold more; twelve single-byte objects fit, and the ninth id onwards
+  // would then have been counted as instance 1 every time.
+  uint8_t seen_ids[12] = {};
+  uint8_t seen_instances[12] = {};
   uint8_t seen_count = 0;
   // The k-th object of a type addresses instance k. Counted per payload and per
   // object id, so a node with two temperature probes can have one entity each
