@@ -35,15 +35,20 @@ void NRF24BTHomeHub::on_nrf24_frame(uint8_t /*pipe*/, const uint8_t *frame, uint
 
   // A fixed-size pipe hands out the configured length whatever the sender meant,
   // so senders fill the rest with 0xFF - an object id BTHome does not define,
-  // which makes it unambiguous where the data ends. Cutting it here rather than
-  // in the decoder keeps the transport's padding out of the format: what BTHome
-  // sees is what it would see over BLE. Only on padded pipes - on a dynamic one
-  // the length is the sender's own and a trailing 0xFF is data.
-  if (padded) {
-    while (len > 4 + 3 && frame[len - 1] == 0xFF) {
-      len--;
-    }
-  }
+  // which makes it unambiguous where the data ends.
+  //
+  // Unambiguous only where an object id is expected, though. This used to trim
+  // every trailing 0xFF, which also eats value bytes that happen to be 0xFF:
+  // BTHome is little endian, so a signed 16-bit measurement between -0.01 and
+  // -2.56 ends in 0xFF. Measured - a temperature of -1.00 C arrives as
+  // "02 9C FF", loses its high byte to the trim, and the whole frame is then
+  // discarded as truncated. An outdoor sensor would go silent just below
+  // freezing, with nothing but a malformed-payload line to show for it.
+  //
+  // So the padding is not cut here at all. The decoder walks the objects, and
+  // where it reports an unknown object id of 0xFF it has reached the padding
+  // rather than corruption - handled at the end of handle_service_data().
+  (void) padded;
 
   ESP_LOGVV(TAG, "Frame from %02X:%02X:%02X:%02X, %u bytes", frame[0], frame[1], frame[2],
             frame[3], len);
@@ -192,7 +197,15 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
     }
   }
 
-  const auto decode_status = decoder.status();
+  auto decode_status = decoder.status();
+  // The transport pads a fixed-length frame to the slot with 0xFF, which is not
+  // a BTHome object id - so the decoder stopping on exactly that id is the end
+  // of the sender's data, not a fault. Recognised here rather than by trimming
+  // the frame beforehand, because 0xFF is only padding in this position: inside
+  // a value it is an ordinary byte, and cutting it there loses measurements.
+  if (decode_status == BTHome::DecodeStatus::UnknownId && obj.object_id == 0xFF) {
+    decode_status = BTHome::DecodeStatus::End;
+  }
   if (decode_status != BTHome::DecodeStatus::End) {
     // Deliberately without recording the packet id: a corrupted copy of a frame
     // must not dedup away the intact repeats that follow it. The sender sends
