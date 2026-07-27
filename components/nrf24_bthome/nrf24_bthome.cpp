@@ -25,11 +25,24 @@ void NRF24BTHomeHub::loop() {
   }
 }
 
-void NRF24BTHomeHub::on_nrf24_frame(uint8_t /*pipe*/, const uint8_t *frame, uint8_t len) {
+void NRF24BTHomeHub::on_nrf24_frame(uint8_t /*pipe*/, const uint8_t *frame, uint8_t len,
+                                    bool padded) {
   // [4-byte sender ID][uuid lo][uuid hi][device info][objects...]
   if (len < 4 + 3) {
     ESP_LOGV(TAG, "Frame too short (%u bytes)", len);
     return;
+  }
+
+  // A fixed-size pipe hands out the configured length whatever the sender meant,
+  // so senders fill the rest with 0xFF - an object id BTHome does not define,
+  // which makes it unambiguous where the data ends. Cutting it here rather than
+  // in the decoder keeps the transport's padding out of the format: what BTHome
+  // sees is what it would see over BLE. Only on padded pipes - on a dynamic one
+  // the length is the sender's own and a trailing 0xFF is data.
+  if (padded) {
+    while (len > 4 + 3 && frame[len - 1] == 0xFF) {
+      len--;
+    }
   }
 
   ESP_LOGVV(TAG, "Frame from %02X:%02X:%02X:%02X, %u bytes", frame[0], frame[1], frame[2],

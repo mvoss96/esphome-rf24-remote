@@ -41,12 +41,14 @@ static const uint8_t STATUS_RX_DR = 0x40;
 static const uint8_t FIFO_RX_EMPTY = 0x01;
 static const uint8_t FIFO_RX_FULL = 0x02;
 
-void NRF24Hub::add_pipe(const std::vector<uint8_t> &address) {
-  std::array<uint8_t, 5> addr{};
-  for (size_t i = 0; i < addr.size() && i < address.size(); i++) {
-    addr[i] = address[i];
+void NRF24Hub::add_pipe(const std::vector<uint8_t> &address, uint8_t payload_size, bool auto_ack) {
+  Pipe pipe;
+  for (size_t i = 0; i < pipe.address.size() && i < address.size(); i++) {
+    pipe.address[i] = address[i];
   }
-  this->pipes_.push_back(addr);
+  pipe.payload_size = payload_size;
+  pipe.auto_ack = auto_ack;
+  this->pipes_.push_back(pipe);
 }
 
 void NRF24Hub::setup() {
@@ -69,10 +71,21 @@ void NRF24Hub::radio_init_() {
   delay(5);  // power-on / settling
 
   // One enable bit per configured pipe: first entry is pipe 1, further
-  // entries are pipes 2-5.
+  // entries are pipes 2-5. Auto-ack and dynamic payloads get their own masks,
+  // because both are per-pipe and a radio may serve one converted and one
+  // unconverted sender at the same time.
   uint8_t pipe_mask = 0;
+  uint8_t auto_ack_mask = 0;
+  uint8_t dynamic_mask = 0;
   for (size_t i = 0; i < this->pipes_.size() && i < 5; i++) {
-    pipe_mask |= 1 << (i + 1);
+    const uint8_t bit = 1 << (i + 1);
+    pipe_mask |= bit;
+    if (this->pipes_[i].auto_ack) {
+      auto_ack_mask |= bit;
+    }
+    if (this->pipes_[i].payload_size == 0) {
+      dynamic_mask |= bit;
+    }
   }
 
   this->write_register_(REG_CONFIG, CONFIG_STANDBY);
@@ -88,7 +101,7 @@ void NRF24Hub::radio_init_() {
   // receiver with auto-ack answers even frames flagged NO_ACK - captured on the
   // air as a 1-byte frame behind the broadcast, landing on top of the traffic
   // every other receiver is trying to hear.
-  this->write_register_(REG_EN_AA, this->auto_ack_ ? pipe_mask : 0x00);
+  this->write_register_(REG_EN_AA, auto_ack_mask);
   this->write_register_(REG_EN_RXADDR, pipe_mask);
   this->write_register_(REG_SETUP_AW, 0x03);    // 5-byte addresses
   this->write_register_(REG_SETUP_RETR, 0x00);  // no auto-retransmit (RX only)
@@ -106,34 +119,33 @@ void NRF24Hub::radio_init_() {
   if (!this->pipes_.empty()) {
     // Pipe 1 carries the full 5-byte address; pipes 2-5 only their first
     // byte (the on-air LSB) - the remaining bytes are shared with pipe 1.
-    this->write_register_(REG_RX_ADDR_P1, this->pipes_[0].data(), 5);
+    this->write_register_(REG_RX_ADDR_P1, this->pipes_[0].address.data(), 5);
     for (size_t i = 1; i < this->pipes_.size() && i < 5; i++) {
-      this->write_register_(REG_RX_ADDR_P2 + (i - 1), this->pipes_[i][0]);
+      this->write_register_(REG_RX_ADDR_P2 + (i - 1), this->pipes_[i].address[0]);
     }
   }
 
-  if (this->payload_size_ == 0) {
-    // Dynamic payload lengths; some clones need the ACTIVATE handshake before
-    // FEATURE becomes writable, so verify and retry once.
-    this->write_register_(REG_FEATURE, 0x04);  // EN_DPL
-    if (this->read_register_(REG_FEATURE) != 0x04) {
-      this->enable();
-      this->transfer_byte(CMD_ACTIVATE);
-      this->transfer_byte(0x73);
-      this->disable();
-      this->write_register_(REG_FEATURE, 0x04);
-    }
-    this->write_register_(REG_DYNPD, pipe_mask);
-  } else {
-    // Static payload length: the size lives on the receiver, in RX_PW_Pn, and
-    // has to match what the sender clocks into its TX FIFO (spec section 7.3.4,
-    // page 29). Nothing here asks the chip how long a payload is, which is the
-    // point - it is the one length question these modules answer unreliably.
-    this->write_register_(REG_FEATURE, 0x00);
-    this->write_register_(REG_DYNPD, 0x00);
-    for (size_t i = 0; i < this->pipes_.size() && i < 5; i++) {
-      this->write_register_(REG_RX_PW_P1 + i, this->payload_size_);
-    }
+  // EN_DPL is a chip-wide switch, DYNPD picks the pipes it applies to - so the
+  // feature is enabled as soon as any pipe wants it, and the pipes that do not
+  // are simply left out of DYNPD. Some clones need the ACTIVATE handshake before
+  // FEATURE becomes writable, so verify and retry once.
+  const uint8_t feature = dynamic_mask != 0 ? 0x04 : 0x00;  // EN_DPL
+  this->write_register_(REG_FEATURE, feature);
+  if (feature != 0 && this->read_register_(REG_FEATURE) != feature) {
+    this->enable();
+    this->transfer_byte(CMD_ACTIVATE);
+    this->transfer_byte(0x73);
+    this->disable();
+    this->write_register_(REG_FEATURE, feature);
+  }
+  this->write_register_(REG_DYNPD, dynamic_mask);
+
+  // Static pipes take their length from RX_PW_Pn, which has to match what the
+  // sender clocks into its TX FIFO (spec section 7.3.4, page 29). Those pipes
+  // never get asked how long a payload is - the one length question these
+  // modules answer unreliably.
+  for (size_t i = 0; i < this->pipes_.size() && i < 5; i++) {
+    this->write_register_(REG_RX_PW_P1 + i, this->pipes_[i].payload_size);
   }
 
   this->write_register_(REG_STATUS, STATUS_CLEAR);
@@ -198,6 +210,17 @@ bool NRF24Hub::rf_setup_bit0_writable_() {
   return stuck;
 }
 
+// The configured size for a pipe, or 0 when it runs dynamic. Pipe 1 is the first
+// configured entry, so the numbering shifts by one; an unknown pipe number (the
+// chip reports 7 when the FIFO is empty) reads as dynamic, which makes the
+// caller ask the chip rather than trust a length nobody configured.
+uint8_t NRF24Hub::pipe_payload_size_(uint8_t pipe) const {
+  if (pipe < 1 || pipe > this->pipes_.size()) {
+    return 0;
+  }
+  return this->pipes_[pipe - 1].payload_size;
+}
+
 void NRF24Hub::drain_fifo_() {
   // Drain the 3-deep RX FIFO; the guard keeps a flooded channel from
   // starving the rest of the loop.
@@ -218,11 +241,12 @@ void NRF24Hub::drain_fifo_() {
       ESP_LOGW(TAG, "RX FIFO full, frames may have been dropped (n=%u)",
                static_cast<unsigned>(this->fifo_full_count_));
     }
-    // RX_P_NO in STATUS names the pipe of the payload at the FIFO top.
+    // RX_P_NO in STATUS names the pipe of the payload at the FIFO top - which is
+    // what makes per-pipe lengths workable: the pipe is known before the payload
+    // is read, so a fixed-size pipe never has to ask the chip how long it is.
     const uint8_t pipe = (this->read_register_(REG_STATUS) >> 1) & 0x07;
-    // With a fixed size the length is known and the chip is never asked.
-    const uint8_t len =
-        this->payload_size_ != 0 ? this->payload_size_ : this->read_payload_width_();
+    const uint8_t fixed = this->pipe_payload_size_(pipe);
+    const uint8_t len = fixed != 0 ? fixed : this->read_payload_width_();
     if (len == 0 || len > 32) {
       // Datasheet: a corrupt width mandates flushing the RX FIFO.
       if (this->bad_length_count_ < 0xFFFF) {
@@ -266,7 +290,7 @@ void NRF24Hub::drain_fifo_() {
 #endif
 
     for (auto *listener : this->listeners_) {
-      listener->on_nrf24_frame(pipe, frame, len);
+      listener->on_nrf24_frame(pipe, frame, len, fixed != 0);
     }
   }
 }
@@ -326,15 +350,15 @@ void NRF24Hub::dump_config() {
                                                                                : "2Mbps");
   for (size_t i = 0; i < this->pipes_.size(); i++) {
     const auto &p = this->pipes_[i];
-    ESP_LOGCONFIG(TAG, "  Pipe %u: %02X:%02X:%02X:%02X:%02X", static_cast<unsigned>(i + 1), p[0],
-                  p[1], p[2], p[3], p[4]);
-  }
-  ESP_LOGCONFIG(TAG, "  Auto ack: %s", this->auto_ack_ ? "on" : "off");
-  if (this->payload_size_ == 0) {
-    ESP_LOGCONFIG(TAG, "  Payload size: dynamic");
-  } else {
-    ESP_LOGCONFIG(TAG, "  Payload size: %u bytes (fixed)",
-                  static_cast<unsigned>(this->payload_size_));
+    char size[16];
+    if (p.payload_size == 0) {
+      snprintf(size, sizeof(size), "dynamic");
+    } else {
+      snprintf(size, sizeof(size), "%u bytes", static_cast<unsigned>(p.payload_size));
+    }
+    ESP_LOGCONFIG(TAG, "  Pipe %u: %02X:%02X:%02X:%02X:%02X, payload %s, auto ack %s",
+                  static_cast<unsigned>(i + 1), p.address[0], p.address[1], p.address[2],
+                  p.address[3], p.address[4], size, p.auto_ack ? "on" : "off");
   }
   ESP_LOGCONFIG(TAG, "  Watchdog: %u ms", static_cast<unsigned>(this->watchdog_timeout_));
   ESP_LOGCONFIG(TAG, "  Chip connected: %s", this->chip_ok_ ? "YES" : "NO");

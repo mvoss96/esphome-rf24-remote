@@ -40,10 +40,20 @@ nrf24:
   cs_pin: GPIO8
   ce_pin: GPIO7
   irq_pin: GPIO9
-  channel: 100
+  channel: 90
   air_data_rate: 250kbps
   pipes:
+    # The address senders used before the switch to fixed-length payloads, kept
+    # so unconverted ones keep working: dynamic length, and auto-ack because the
+    # datasheet ties the two together.
     - address: "BTHME"
+    # Converted senders. Fixed 32 bytes needs no auto-ack, so this pipe stays
+    # silent instead of answering broadcasts nobody asked it to answer.
+    # Pipes 2-5 may differ from pipe 1 in the first byte only - "CTHME" vs
+    # "BTHME" is exactly that one byte.
+    - address: "CTHME"
+      payload_size: 32
+      auto_ack: false
 
 nrf24_bthome:
   time_id: ha_time

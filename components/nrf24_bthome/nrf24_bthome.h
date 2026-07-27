@@ -42,7 +42,7 @@ class NRF24BTHomeHub : public Component, public nrf24::NRF24Listener {
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::DATA; }
 
-  void on_nrf24_frame(uint8_t pipe, const uint8_t *data, uint8_t len) override;
+  void on_nrf24_frame(uint8_t pipe, const uint8_t *data, uint8_t len, bool padded) override;
 
  protected:
   nrf24::NRF24Hub *parent_{nullptr};
