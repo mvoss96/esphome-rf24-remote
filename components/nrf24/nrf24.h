@@ -58,6 +58,11 @@ class NRF24Hub : public Component,
 
   uint8_t channel() const { return this->channel_; }
   bool chip_ok() const { return this->chip_ok_; }
+  // True when the part behaves like an Si24R1 rather than genuine nRF24L01+
+  // silicon. Worth knowing: a clone hands out every payload shorter than 32
+  // bytes twice, the second copy carrying an earlier payload, which reaches a
+  // listener as an event that never happened.
+  bool clone_suspected() const { return this->clone_suspected_; }
   // How often the RX FIFO was found full, i.e. how often frames were at risk
   // of being dropped. The chip has no lost-frame counter, so this is the only
   // evidence available.
@@ -67,6 +72,9 @@ class NRF24Hub : public Component,
   static void IRAM_ATTR s_irq_isr(NRF24Hub *self) { self->irq_flag_ = true; }
 
   void radio_init_();
+  // Writes bit 0 of RF_SETUP and reports whether it stuck. See the definition
+  // for why that tells a clone from the real thing.
+  bool rf_setup_bit0_writable_();
   uint8_t read_register_(uint8_t reg);
   void write_register_(uint8_t reg, uint8_t value);
   void write_register_(uint8_t reg, const uint8_t *data, size_t len);
@@ -86,6 +94,7 @@ class NRF24Hub : public Component,
   uint32_t last_activity_ms_{0};       // last received frame or (re-)init
   uint16_t fifo_full_count_{0};        // times the RX FIFO was found full
   bool chip_ok_{false};
+  bool clone_suspected_{false};
   std::vector<NRF24Listener *> listeners_;
 };
 

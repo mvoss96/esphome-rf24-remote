@@ -75,9 +75,17 @@ void NRF24Hub::radio_init_() {
   }
 
   this->write_register_(REG_CONFIG, CONFIG_STANDBY);
-  // ENAA must stay set on RX pipes: the datasheet gates dynamic payload
-  // length on auto-ack being enabled for the pipe. No ACKs are transmitted
-  // for frames flagged NO_ACK by the sender.
+  // ENAA must stay set on RX pipes: the datasheet gates dynamic payload length on
+  // auto-ack being enabled for the pipe.
+  //
+  // Tried turning it off, because on these modules the NO_ACK bit is inverted and
+  // a receiver with auto-ack answers even broadcasts - measured on the air as a
+  // 1-byte frame behind the broadcast, which is pollution nobody asked for. It is
+  // not worth it: with EN_AA=0 this receiver starts handing out payloads shorter
+  // than 32 bytes twice, the second copy carrying an older payload, and a stale
+  // copy with a different packet id passes the dedup and fires a button event
+  // that never happened. Measured on one device minutes apart - three "Button 1:
+  // press" for a single click with auto-ack off, exactly one with it on.
   this->write_register_(REG_EN_AA, pipe_mask);
   this->write_register_(REG_EN_RXADDR, pipe_mask);
   this->write_register_(REG_SETUP_AW, 0x03);    // 5-byte addresses
@@ -122,12 +130,19 @@ void NRF24Hub::radio_init_() {
   this->chip_ok_ = (this->read_register_(REG_SETUP_AW) == 0x03) &&
                    (this->read_register_(REG_RF_CH) == this->channel_);
 
+  // Probed while the radio is still in standby, so nothing is in flight when the
+  // register is written and put back.
+  if (this->chip_ok_) {
+    this->clone_suspected_ = this->rf_setup_bit0_writable_();
+  }
+
   this->write_register_(REG_CONFIG, CONFIG_RX);
   delay(5);  // Tpd2stby
   this->ce_pin_->digital_write(true);  // enter RX mode
 
   this->last_activity_ms_ = millis();
-  ESP_LOGD(TAG, "Radio initialized (chip %s)", this->chip_ok_ ? "ok" : "MISSING");
+  ESP_LOGD(TAG, "Radio initialized (chip %s, %s)", this->chip_ok_ ? "ok" : "MISSING",
+           this->clone_suspected_ ? "Si24R1-like" : "nRF24L01+-like");
 
   uint8_t addr[5] = {0};
   this->enable();
@@ -144,6 +159,29 @@ void NRF24Hub::radio_init_() {
            this->read_register_(REG_RF_CH), this->read_register_(REG_RF_SETUP),
            this->read_register_(REG_FEATURE), this->read_register_(REG_DYNPD),
            this->read_register_(REG_FIFO_STATUS), addr[0], addr[1], addr[2], addr[3], addr[4]);
+}
+
+// Genuine nRF24L01+ silicon has no use for bit 0 of RF_SETUP - its datasheet
+// marks the bit obsolete and the chip holds it at zero. On the Si24R1, the clone
+// routinely sold under the Nordic part number, that same bit is the low bit of
+// its own RF_PWR field, so it can be written and read back. Writing it is
+// therefore the one cheap way to tell the two apart without a microscope or a
+// current meter.
+//
+// Why care: the Si24R1 hands out every payload shorter than 32 bytes twice, the
+// second copy carrying an earlier payload. A stale copy whose packet id differs
+// from the current one passes a packet-id filter and arrives at a listener as a
+// button press nobody made.
+//
+// The test comes from a proposal in the RF24 library's issue tracker
+// (nRF24/RF24#603) and has not been confirmed against a known-genuine part, so
+// it is reported as a suspicion and nothing depends on it.
+bool NRF24Hub::rf_setup_bit0_writable_() {
+  const uint8_t saved = this->read_register_(REG_RF_SETUP);
+  this->write_register_(REG_RF_SETUP, static_cast<uint8_t>(saved | 0x01));
+  const bool stuck = (this->read_register_(REG_RF_SETUP) & 0x01) != 0;
+  this->write_register_(REG_RF_SETUP, saved);
+  return stuck;
 }
 
 void NRF24Hub::drain_fifo_() {
@@ -256,6 +294,18 @@ void NRF24Hub::dump_config() {
   }
   ESP_LOGCONFIG(TAG, "  Watchdog: %u ms", static_cast<unsigned>(this->watchdog_timeout_));
   ESP_LOGCONFIG(TAG, "  Chip connected: %s", this->chip_ok_ ? "YES" : "NO");
+  if (this->chip_ok_) {
+    ESP_LOGCONFIG(TAG, "  Chip type: %s",
+                  this->clone_suspected_ ? "Si24R1-like clone (RF_SETUP bit 0 is writable)"
+                                         : "nRF24L01+-like (RF_SETUP bit 0 reads back as 0)");
+    if (this->clone_suspected_) {
+      // Worth a warning rather than a config line: on this part a short payload
+      // is delivered twice, the second time with an older payload, and a stale
+      // copy with a different packet id looks like a real second event.
+      ESP_LOGW(TAG, "Module looks like an Si24R1 clone - expect duplicated frames "
+                    "carrying stale payloads");
+    }
+  }
 }
 
 // ---- SPI plumbing ---------------------------------------------------------------
