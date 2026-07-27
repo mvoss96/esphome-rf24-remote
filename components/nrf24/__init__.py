@@ -86,8 +86,6 @@ def _validate_pipes(pipes):
     return pipes
 
 
-PIPE_SCHEMA = cv.Schema({cv.Required(CONF_ADDRESS): _pipe_address})
-
 # "dynamic" (the sender decides per packet) or a fixed 1-32 bytes that every
 # packet must have.
 PAYLOAD_DYNAMIC = "dynamic"
@@ -99,8 +97,30 @@ def _payload_size(value):
     return cv.int_range(min=1, max=32)(value)
 
 
+# Both settings are per-pipe registers on the chip (DYNPD, EN_AA, RX_PW_Pn), so
+# they are per-pipe here too. Given at hub level they are the default for every
+# pipe; given on a pipe they override it. That is what makes a migration possible
+# at all: one pipe can keep serving senders that have not been converted yet
+# while another serves the ones that have.
+PIPE_SCHEMA = cv.Schema(
+    {
+        cv.Required(CONF_ADDRESS): _pipe_address,
+        cv.Optional(CONF_PAYLOAD_SIZE): _payload_size,
+        cv.Optional(CONF_AUTO_ACK): cv.boolean,
+    }
+)
+
+
+def pipe_settings(config, pipe):
+    """The values in force for one pipe: its own, else the hub's."""
+    return (
+        pipe.get(CONF_PAYLOAD_SIZE, config[CONF_PAYLOAD_SIZE]),
+        pipe.get(CONF_AUTO_ACK, config[CONF_AUTO_ACK]),
+    )
+
+
 def _validate_radio(config):
-    """Rejects the one combination the chip does not implement.
+    """Rejects the one combination the chip does not implement, per pipe.
 
     Dynamic payload length is not a free-standing feature: the datasheet makes it
     part of Enhanced ShockBurst, and Enhanced ShockBurst acknowledges. Getting
@@ -109,9 +129,12 @@ def _validate_radio(config):
     which arrives as an event that never happened. Cheaper to refuse at compile
     time than to debug at 3am.
     """
-    if config[CONF_PAYLOAD_SIZE] == PAYLOAD_DYNAMIC and not config[CONF_AUTO_ACK]:
+    for index, pipe in enumerate(config[CONF_PIPES]):
+        payload_size, auto_ack = pipe_settings(config, pipe)
+        if payload_size != PAYLOAD_DYNAMIC or auto_ack:
+            continue
         raise cv.Invalid(
-            "payload_size: dynamic requires auto_ack: true.\n"
+            f"pipe {index + 1}: payload_size: dynamic requires auto_ack: true.\n"
             "\n"
             "nRF24L01+ Product Specification v1.0, Table 28, register 0x1C "
             "(DYNPD), page 63\n"
@@ -181,10 +204,14 @@ async def to_code(config):
     cg.add(var.set_channel(config[CONF_CHANNEL]))
     cg.add(var.set_data_rate(config[CONF_AIR_DATA_RATE]))
     cg.add(var.set_pa_level(config[CONF_PA_LEVEL]))
-    cg.add(var.set_auto_ack(config[CONF_AUTO_ACK]))
-    # 0 carries "dynamic" to the driver; a real length is 1-32.
-    payload_size = config[CONF_PAYLOAD_SIZE]
-    cg.add(var.set_payload_size(0 if payload_size == PAYLOAD_DYNAMIC else payload_size))
     cg.add(var.set_watchdog_timeout(config[CONF_WATCHDOG_TIMEOUT]))
     for pipe in config[CONF_PIPES]:
-        cg.add(var.add_pipe(pipe[CONF_ADDRESS]))
+        payload_size, auto_ack = pipe_settings(config, pipe)
+        # 0 carries "dynamic" to the driver; a real length is 1-32.
+        cg.add(
+            var.add_pipe(
+                pipe[CONF_ADDRESS],
+                0 if payload_size == PAYLOAD_DYNAMIC else payload_size,
+                auto_ack,
+            )
+        )
