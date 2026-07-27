@@ -44,6 +44,10 @@ class NRF24Hub : public Component,
   void set_channel(uint8_t channel) { this->channel_ = channel; }
   void set_data_rate(DataRate rate) { this->data_rate_ = rate; }
   void set_pa_level(PALevel level) { this->pa_level_ = level; }
+  void set_auto_ack(bool enabled) { this->auto_ack_ = enabled; }
+  // 0 means dynamic payload length; 1-32 is a fixed size every packet must have.
+  // The pairing of the two is validated in the config schema, not here.
+  void set_payload_size(uint8_t size) { this->payload_size_ = size; }
   void set_watchdog_timeout(uint32_t timeout_ms) { this->watchdog_timeout_ = timeout_ms; }
   // First call defines pipe 1 (full 5-byte address); later calls define
   // pipes 2-5, which share all but their first byte (the on-air LSB) with
@@ -67,6 +71,16 @@ class NRF24Hub : public Component,
   // of being dropped. The chip has no lost-frame counter, so this is the only
   // evidence available.
   uint16_t fifo_full_count() const { return this->fifo_full_count_; }
+
+  // Counters that exist because of one concrete failure: a receiver that went
+  // six hours without reacting to a single button press while still reporting
+  // the remote as seen, and afterwards nothing on the device could say whether
+  // it had heard nothing at all or heard and discarded. Split by length, because
+  // that outage lost exactly the short frames and kept the full-slot ones.
+  uint32_t rx_frames() const { return this->rx_frames_; }
+  uint32_t rx_short_frames() const { return this->rx_short_frames_; }
+  uint16_t bad_length_count() const { return this->bad_length_count_; }
+  uint16_t watchdog_count() const { return this->watchdog_count_; }
 
  protected:
   static void IRAM_ATTR s_irq_isr(NRF24Hub *self) { self->irq_flag_ = true; }
@@ -92,7 +106,13 @@ class NRF24Hub : public Component,
   std::vector<std::array<uint8_t, 5>> pipes_;
   uint32_t watchdog_timeout_{300000};  // overwritten by codegen; keep in sync with the 5min schema default
   uint32_t last_activity_ms_{0};       // last received frame or (re-)init
+  bool auto_ack_{true};
+  uint8_t payload_size_{0};            // 0 = dynamic payload length
   uint16_t fifo_full_count_{0};        // times the RX FIFO was found full
+  uint32_t rx_frames_{0};              // payloads taken out of the FIFO
+  uint32_t rx_short_frames_{0};        // ... of which shorter than a full slot
+  uint16_t bad_length_count_{0};       // payload widths the chip reported as 0 or >32
+  uint16_t watchdog_count_{0};         // radio re-inits forced by the watchdog
   bool chip_ok_{false};
   bool clone_suspected_{false};
   std::vector<NRF24Listener *> listeners_;
