@@ -63,6 +63,13 @@ void NRF24Hub::setup() {
   if (!this->chip_ok_) {
     ESP_LOGE(TAG, "nRF24 not responding - check wiring (CE/CSN/SPI)");
     this->status_set_error();
+  } else if (!this->regs_ok_) {
+    // The individual mismatches are logged where they are found. Failing the
+    // component is the point: a radio configured differently from the YAML is
+    // not a working radio, and without this it would simply receive nothing
+    // while looking healthy.
+    ESP_LOGE(TAG, "Radio did not accept its configuration - see the register errors above");
+    this->status_set_error();
   }
 }
 
@@ -156,6 +163,48 @@ void NRF24Hub::radio_init_() {
   this->chip_ok_ = (this->read_register_(REG_SETUP_AW) == 0x03) &&
                    (this->read_register_(REG_RF_CH) == this->channel_);
 
+  // The per-pipe registers are verified separately, because they are the ones
+  // whose silent refusal is expensive. EN_AA and DYNPD decide whether a pipe
+  // hears anything at all and whether short payloads arrive twice: a chip that
+  // does not take them runs on, hears nothing or duplicates everything, and
+  // says so nowhere. Two debugging sessions went into that failure mode from
+  // the outside; reading four registers back costs four SPI transfers.
+  this->regs_ok_ = true;
+  if (this->chip_ok_) {
+    struct {
+      const char *name;
+      uint8_t reg;
+      uint8_t expected;
+    } const checks[] = {
+        {"EN_AA", REG_EN_AA, auto_ack_mask},
+        {"EN_RXADDR", REG_EN_RXADDR, pipe_mask},
+        {"DYNPD", REG_DYNPD, dynamic_mask},
+        {"FEATURE", REG_FEATURE, feature},
+    };
+    for (const auto &check : checks) {
+      const uint8_t actual = this->read_register_(check.reg);
+      if (actual == check.expected) {
+        continue;
+      }
+      this->regs_ok_ = false;
+      ESP_LOGE(TAG, "%s did not take: wrote %02X, chip reads %02X", check.name, check.expected,
+               actual);
+    }
+    // Static pipes only work if the length the chip enforces matches the one
+    // configured; a wrong RX_PW_Pn makes the pipe deaf rather than noisy.
+    for (size_t i = 0; i < this->pipes_.size() && i < 5; i++) {
+      const uint8_t expected = this->pipes_[i].payload_size;
+      const uint8_t actual = this->read_register_(REG_RX_PW_P1 + i);
+      if (actual == expected) {
+        continue;
+      }
+      this->regs_ok_ = false;
+      ESP_LOGE(TAG, "RX_PW_P%u did not take: wrote %u, chip reads %u",
+               static_cast<unsigned>(i + 1), static_cast<unsigned>(expected),
+               static_cast<unsigned>(actual));
+    }
+  }
+
   // Probed while the radio is still in standby, so nothing is in flight when the
   // register is written and put back.
   if (this->chip_ok_) {
@@ -202,6 +251,11 @@ void NRF24Hub::radio_init_() {
 // The test comes from a proposal in the RF24 library's issue tracker
 // (nRF24/RF24#603) and has not been confirmed against a known-genuine part, so
 // it is reported as a suspicion and nothing depends on it.
+//
+// In practice it has not discriminated once: every module tried here reads as a
+// clone, including the one that never duplicated a frame. Treat the result as a
+// data point, not an explanation - chip identity is only really settled by the
+// marking or by the power-down current (genuine < 1 uA, clone 0.6-1 mA).
 bool NRF24Hub::rf_setup_bit0_writable_() {
   const uint8_t saved = this->read_register_(REG_RF_SETUP);
   this->write_register_(REG_RF_SETUP, static_cast<uint8_t>(saved | 0x01));
@@ -330,7 +384,7 @@ void NRF24Hub::loop() {
              static_cast<unsigned>(this->watchdog_timeout_),
              static_cast<unsigned>(this->watchdog_count_));
     this->radio_init_();
-    if (!this->chip_ok_) {
+    if (!this->chip_ok_ || !this->regs_ok_) {
       this->status_set_error();
     } else {
       this->status_clear_error();
@@ -362,6 +416,9 @@ void NRF24Hub::dump_config() {
   }
   ESP_LOGCONFIG(TAG, "  Watchdog: %u ms", static_cast<unsigned>(this->watchdog_timeout_));
   ESP_LOGCONFIG(TAG, "  Chip connected: %s", this->chip_ok_ ? "YES" : "NO");
+  // Read back from the chip, not repeated from the configuration: the lines
+  // above say what was asked for, this one says whether it took.
+  ESP_LOGCONFIG(TAG, "  Config accepted: %s", this->regs_ok_ ? "YES" : "NO - see errors above");
   // Printed on every dump_config, so `esphome logs` after a silent spell answers
   // "did it hear anything?" without anyone having to reproduce the fault first.
   ESP_LOGCONFIG(TAG, "  Frames: %u (%u shorter than a slot), bad length: %u, "
@@ -372,16 +429,15 @@ void NRF24Hub::dump_config() {
                 static_cast<unsigned>(this->fifo_full_count_),
                 static_cast<unsigned>(this->watchdog_count_));
   if (this->chip_ok_) {
+    // Reported as an observation, not a warning. It used to warn about duplicated
+    // frames carrying stale payloads, which was wrong on two counts: the probe
+    // does not discriminate in practice (every module here reads as a clone,
+    // including one that never duplicated anything), and fixed-length payloads
+    // removed that failure mode altogether. A warning on every boot of every
+    // device teaches people to ignore warnings.
     ESP_LOGCONFIG(TAG, "  Chip type: %s",
                   this->clone_suspected_ ? "Si24R1-like clone (RF_SETUP bit 0 is writable)"
                                          : "nRF24L01+-like (RF_SETUP bit 0 reads back as 0)");
-    if (this->clone_suspected_) {
-      // Worth a warning rather than a config line: on this part a short payload
-      // is delivered twice, the second time with an older payload, and a stale
-      // copy with a different packet id looks like a real second event.
-      ESP_LOGW(TAG, "Module looks like an Si24R1 clone - expect duplicated frames "
-                    "carrying stale payloads");
-    }
   }
 }
 

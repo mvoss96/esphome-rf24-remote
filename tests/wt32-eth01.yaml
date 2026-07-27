@@ -1,0 +1,213 @@
+# Lab receiver on a WT32-ETH01: an nRF24 listener that is always reachable over
+# Ethernet, so the component can be flashed and its logs read without a serial
+# port. Named after the device already adopted in Home Assistant, so it keeps
+# its entities.
+#
+# Hardware: WT32-ETH01 (ESP32 + LAN8720). nRF24 on HSPI (CLK 12, MISO 15,
+# MOSI 14) with CE 4, CSN 2, IRQ 33. Two onboard LEDs on GPIO5 and GPIO17,
+# both active low.
+#
+# Flash and watch over the network:
+#   esphome run   tests/wt32-eth01.yaml --device 192.168.2.70
+#   esphome logs  tests/wt32-eth01.yaml --device 192.168.2.70
+#
+# The ESPHome dashboard in Home Assistant holds a config of the same name
+# without the radio - installing from there replaces this firmware.
+esphome:
+  name: nrf24-esp32hub
+  friendly_name: NRF24 ESP32Hub
+
+esp32:
+  board: wt32-eth01
+  framework:
+    type: esp-idf
+
+ethernet:
+  type: LAN8720
+  mdc_pin: GPIO23
+  mdio_pin: GPIO18
+  clk:
+    mode: CLK_EXT_IN
+    pin: GPIO0
+  phy_addr: 1
+  power_pin: GPIO16
+
+# VERBOSE globally: a per-tag level may not be more verbose than the global one,
+# and the radio's frame-level logging is the point of this build.
+logger:
+  level: VERBOSE
+
+api:
+
+ota:
+  - platform: esphome
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+spi:
+  clk_pin: GPIO12
+  mosi_pin: GPIO14
+  miso_pin: GPIO15
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+nrf24:
+  cs_pin: GPIO2
+  ce_pin: GPIO4
+  irq_pin: GPIO33
+  channel: 90
+  air_data_rate: 250kbps
+  pipes:
+    # Senders not yet converted to fixed-length payloads: dynamic length, and
+    # auto-ack because the datasheet ties the two together.
+    - address: "BTHME"
+    # Converted senders. Fixed 32 bytes needs no auto-ack, so this pipe stays
+    # silent instead of answering broadcasts nobody asked it to answer.
+    # Pipes 2-5 may differ from pipe 1 in the first byte only - "CTHME" vs
+    # "BTHME" is exactly that one byte.
+    - address: "CTHME"
+      payload_size: 32
+      auto_ack: false
+
+nrf24_bthome:
+  time_id: ha_time
+  devices:
+    - id: remote1
+      sender_id: "B7:4F:E7:7F"
+      timeout: 70min  # sender's STATUS_INTERVAL_MIN is 60
+      on_button:
+        - logger.log:
+            format: "button %u: %s"
+            args: [button, event.c_str()]
+        # Visible confirmation that a click landed, without reading the log.
+        - if:
+            condition:
+              lambda: return event == "press";
+            then:
+              - light.toggle: led1
+      on_dimmer:
+        - logger.log:
+            format: "dimmer %u: %d steps"
+            args: [dimmer, steps]
+
+    # Two synthetic senders, played by the sniffer dongles, so sender
+    # attribution can be tested with more than one registered device. The
+    # component's own log lines do not name the device, so these automations
+    # do it. Short timeout: it also exercises the offline transition and the
+    # packet-id aging that comes with it.
+    - id: dongle_a
+      sender_id: "AA:01:00:01"
+      timeout: 15s
+      on_button:
+        - logger.log:
+            format: "DEV=A button %u: %s"
+            args: [button, event.c_str()]
+      on_dimmer:
+        - logger.log:
+            format: "DEV=A dimmer %u: %d steps"
+            args: [dimmer, steps]
+    - id: dongle_b
+      sender_id: "AA:01:00:02"
+      timeout: 15s
+      on_button:
+        - logger.log:
+            format: "DEV=B button %u: %s"
+            args: [button, event.c_str()]
+      on_dimmer:
+        - logger.log:
+            format: "DEV=B dimmer %u: %d steps"
+            args: [dimmer, steps]
+
+output:
+  - platform: gpio
+    pin:
+      number: GPIO5
+      inverted: true
+    id: led1_out
+  - platform: gpio
+    pin:
+      number: GPIO17
+      inverted: true
+    id: led2_out
+
+light:
+  - platform: binary
+    id: led1
+    name: "LED 1"
+    output: led1_out
+  - platform: binary
+    id: led2
+    name: "LED 2"
+    output: led2_out
+
+sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    battery:
+      name: "Remote 1 Battery"
+    voltage:
+      name: "Remote 1 Voltage"
+    last_seen:
+      name: "Remote 1 Last Seen"
+  # internal: the dongle senders exist for the test bench, which reads the
+  # log - no reason to push them into Home Assistant.
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: dongle_a
+    battery:
+      name: "A Battery"
+      internal: true
+    voltage:
+      name: "A Voltage"
+      internal: true
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: dongle_b
+    battery:
+      name: "B Battery"
+      internal: true
+    voltage:
+      name: "B Voltage"
+      internal: true
+
+binary_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    connected:
+      name: "Remote 1 Connected"
+      # LED 2 mirrors the link, so the board itself shows whether the remote
+      # is still being heard.
+      on_press:
+        - light.turn_on: led2
+      on_release:
+        - light.turn_off: led2
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: dongle_a
+    connected:
+      name: "A Connected"
+      internal: true
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: dongle_b
+    connected:
+      name: "B Connected"
+      internal: true
+
+text_sensor:
+  - platform: ethernet_info
+    ip_address:
+      name: "IP-Adresse"
+      entity_category: diagnostic
+    mac_address:
+      name: "MAC-Adresse"
+      entity_category: diagnostic
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    device_name:
+      name: "Remote 1 Name"
+    firmware_version:
+      name: "Remote 1 Firmware"
+    sender_id:
+      name: "Remote 1 Sender ID"

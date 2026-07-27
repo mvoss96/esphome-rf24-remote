@@ -68,6 +68,10 @@ class NRF24Hub : public Component,
 
   uint8_t channel() const { return this->channel_; }
   bool chip_ok() const { return this->chip_ok_; }
+  // True when the per-pipe registers read back what was written to them. False
+  // means the radio is running on a configuration nobody asked for - it will
+  // most likely receive nothing, and only a read-back can tell.
+  bool regs_ok() const { return this->regs_ok_; }
   // True when the part behaves like an Si24R1 rather than genuine nRF24L01+
   // silicon. Worth knowing: a clone hands out every payload shorter than 32
   // bytes twice, the second copy carrying an earlier payload, which reaches a
@@ -124,6 +128,7 @@ class NRF24Hub : public Component,
   uint16_t bad_length_count_{0};       // payload widths the chip reported as 0 or >32
   uint16_t watchdog_count_{0};         // radio re-inits forced by the watchdog
   bool chip_ok_{false};
+  bool regs_ok_{false};
   bool clone_suspected_{false};
   std::vector<NRF24Listener *> listeners_;
 };
