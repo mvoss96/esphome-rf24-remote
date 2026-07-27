@@ -75,8 +75,14 @@ class NRF24BTHomeDevice {
   bool handle_service_data(const uint8_t *data, size_t len);
 
 #ifdef USE_SENSOR
-  void set_battery_sensor(sensor::Sensor *s) { this->battery_sensor_ = s; }
-  void set_voltage_sensor(sensor::Sensor *s) { this->voltage_sensor_ = s; }
+  // Every measurement sensor is registered the same way, battery and voltage
+  // included: they are BTHome objects like any other and had no business being
+  // special cases. `index` selects which occurrence of that object in a frame
+  // this sensor takes - the k-th object of a type addresses instance k, the
+  // convention buttons and dimmers already follow.
+  void add_object_sensor(uint8_t object_id, uint8_t index, sensor::Sensor *s) {
+    this->object_sensors_.push_back(ObjectSensor{object_id, index, s, false, 0.0f});
+  }
   void set_last_seen_sensor(sensor::Sensor *s) { this->last_seen_sensor_ = s; }
 #endif
 #ifdef USE_TEXT_SENSOR
@@ -132,10 +138,6 @@ class NRF24BTHomeDevice {
     bool overflow{false};  // more event objects than MAX_EVENTS
 
     int16_t packet_id{-1};  // -1 = the payload carried none
-    bool has_battery{false};
-    float battery{0.0f};
-    bool has_voltage{false};
-    float voltage{0.0f};
     // Points into the caller's frame buffer, which outlives this struct: it is
     // only read before handle_service_data() returns.
     const uint8_t *name{nullptr};
@@ -155,10 +157,17 @@ class NRF24BTHomeDevice {
   std::vector<Trigger<uint8_t, std::string> *> button_triggers_;
   std::vector<Trigger<uint8_t, int> *> dimmer_triggers_;
 #ifdef USE_SENSOR
-  sensor::Sensor *battery_sensor_{nullptr};
-  sensor::Sensor *voltage_sensor_{nullptr};
-#endif
-#ifdef USE_SENSOR
+  // The value carried by the current payload is parked in the slot itself
+  // rather than in Pending: one payload is processed at a time, and this keeps
+  // a per-frame struct from growing with the number of configured sensors.
+  struct ObjectSensor {
+    uint8_t object_id;
+    uint8_t index;  // 1-based occurrence of that object id within one payload
+    sensor::Sensor *sensor;
+    bool has_pending;
+    float pending;
+  };
+  std::vector<ObjectSensor> object_sensors_;
   sensor::Sensor *last_seen_sensor_{nullptr};
 #endif
 #ifdef USE_TEXT_SENSOR

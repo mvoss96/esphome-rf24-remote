@@ -180,14 +180,16 @@ sensor:
     voltage:
       name: "B Voltage"
       internal: true
-  # Everything the component can map from this node. It also sends temperature
-  # and humidity, for which there is no option here at all - that is the gap.
   - platform: nrf24_bthome
     nrf24_bthome_device_id: sensor_node
     battery:
       name: "Sensor Node Battery"
     voltage:
       name: "Sensor Node Voltage"
+    temperature:
+      name: "Sensor Node Temperature"
+    humidity:
+      name: "Sensor Node Humidity"
     last_seen:
       name: "Sensor Node Last Seen"
 

@@ -137,6 +137,17 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
   // why nothing may be published or triggered from inside this loop.
   Pending pending;
 
+  // Per-payload instance counters: how often each sensor object id has been
+  // seen so far. Eight distinct ids is more than a 32-byte frame can carry.
+  uint8_t seen_ids[8] = {};
+  uint8_t seen_instances[8] = {};
+  uint8_t seen_count = 0;
+#ifdef USE_SENSOR
+  for (auto &slot : this->object_sensors_) {
+    slot.has_pending = false;
+  }
+#endif
+
   BTHome::Decoded obj;
   while (decoder.next(obj)) {
     switch (obj.kind) {
@@ -163,15 +174,34 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
         break;
       }
       case BTHome::ObjectKind::Sensor: {
-        ESP_LOGV(TAG, "%s: sensor 0x%02X: %.3f", this->sender_id_text_, obj.object_id, obj.value);
-        if (obj.is(BTHome::ObjectId::Battery)) {
-          pending.has_battery = true;
-          pending.battery = obj.value;
+        // The k-th object of a type addresses instance k. Counted per payload
+        // and per object id, so a node with two temperature probes can have one
+        // entity each instead of the second silently overwriting the first.
+        uint8_t instance = 0;
+        for (uint8_t i = 0; i < seen_count; i++) {
+          if (seen_ids[i] == obj.object_id) {
+            instance = ++seen_instances[i];
+            break;
+          }
         }
-        if (obj.is(BTHome::ObjectId::Voltage)) {
-          pending.has_voltage = true;
-          pending.voltage = obj.value;
+        if (instance == 0) {
+          instance = 1;
+          if (seen_count < sizeof(seen_ids)) {
+            seen_ids[seen_count] = obj.object_id;
+            seen_instances[seen_count] = 1;
+            seen_count++;
+          }
         }
+        ESP_LOGV(TAG, "%s: sensor 0x%02X#%u: %.3f", this->sender_id_text_, obj.object_id,
+                 instance, obj.value);
+#ifdef USE_SENSOR
+        for (auto &slot : this->object_sensors_) {
+          if (slot.object_id == obj.object_id && slot.index == instance) {
+            slot.has_pending = true;
+            slot.pending = obj.value;
+          }
+        }
+#endif
         break;
       }
       case BTHome::ObjectKind::Text: {
@@ -266,11 +296,10 @@ void NRF24BTHomeDevice::commit_(const Pending &pending) {
   }
 
 #ifdef USE_SENSOR
-  if (pending.has_battery && this->battery_sensor_ != nullptr) {
-    this->battery_sensor_->publish_state(pending.battery);
-  }
-  if (pending.has_voltage && this->voltage_sensor_ != nullptr) {
-    this->voltage_sensor_->publish_state(pending.voltage);
+  for (auto &slot : this->object_sensors_) {
+    if (slot.has_pending && slot.sensor != nullptr) {
+      slot.sensor->publish_state(slot.pending);
+    }
   }
 #endif
 
