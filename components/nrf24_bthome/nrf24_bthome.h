@@ -58,6 +58,10 @@ class NRF24BTHomeDevice {
   void set_sender_id(const std::vector<uint8_t> &id);
   bool matches(const uint8_t *id) const;
   const uint8_t *sender_id() const { return this->sender_id_.data(); }
+  // "B7:4F:E7:7F" - every log line this device writes carries it, because with
+  // more than one registered sender a bare "Button 1: press" says nothing about
+  // who pressed it.
+  const char *sender_id_text() const { return this->sender_id_text_; }
 
   void add_button_trigger(Trigger<uint8_t, std::string> *trigger) {
     this->button_triggers_.push_back(trigger);
@@ -99,7 +103,51 @@ class NRF24BTHomeDevice {
   void check_timeout(uint32_t now_ms);
 
  protected:
+  // What one payload turned out to contain. Nothing is published and no trigger
+  // is fired while the objects are still being read, for two reasons that both
+  // showed up in measurements:
+  //
+  //  - BTHome fixes no object order, and the packet id that identifies a repeat
+  //    may sit BEHIND the event object it belongs to. Acting as the objects go
+  //    past therefore fired a repeat's button before the id could suppress it -
+  //    two events for one press, reproduced by sending one frame twice.
+  //  - A payload whose objects do not add up may have been read with the wrong
+  //    length, and the remainder then decodes into something plausible rather
+  //    than into an obvious error. Values from such a frame are not worth
+  //    publishing and its events did not happen.
+  //
+  // Capacity is fixed: this runs off a frame buffer in the radio's drain loop,
+  // and 32 bytes cannot hold more objects than this anyway.
+  // constexpr, not const: it is passed to a log call, which odr-uses it, and a
+  // plain static const member would then need an out-of-line definition.
+  static constexpr uint8_t MAX_EVENTS = 12;
+  struct Pending {
+    // Event codes in the order they appeared; the k-th entry addresses
+    // instance k, and a None entry is a placeholder that fires nothing.
+    uint8_t buttons[MAX_EVENTS];
+    uint8_t button_count{0};
+    uint8_t dimmer_events[MAX_EVENTS];
+    uint8_t dimmer_steps[MAX_EVENTS];
+    uint8_t dimmer_count{0};
+    bool overflow{false};  // more event objects than MAX_EVENTS
+
+    int16_t packet_id{-1};  // -1 = the payload carried none
+    bool has_battery{false};
+    float battery{0.0f};
+    bool has_voltage{false};
+    float voltage{0.0f};
+    // Points into the caller's frame buffer, which outlives this struct: it is
+    // only read before handle_service_data() returns.
+    const uint8_t *name{nullptr};
+    uint8_t name_len{0};
+    bool has_firmware{false};
+    bool firmware_u32{false};
+    uint32_t firmware{0};
+  };
+  void commit_(const Pending &pending);
+
   std::array<uint8_t, 4> sender_id_{{0, 0, 0, 0}};
+  char sender_id_text_[12]{"00:00:00:00"};
   int16_t last_packet_id_{-1};  // -1 = nothing received yet
   uint32_t timeout_ms_{0};
   uint32_t last_contact_ms_{0};  // millis() of the last valid frame (repeats count)

@@ -70,6 +70,8 @@ void NRF24BTHomeDevice::set_sender_id(const std::vector<uint8_t> &id) {
   for (size_t i = 0; i < this->sender_id_.size() && i < id.size(); i++) {
     this->sender_id_[i] = id[i];
   }
+  snprintf(this->sender_id_text_, sizeof(this->sender_id_text_), "%02X:%02X:%02X:%02X",
+           this->sender_id_[0], this->sender_id_[1], this->sender_id_[2], this->sender_id_[3]);
 }
 
 bool NRF24BTHomeDevice::matches(const uint8_t *id) const {
@@ -79,10 +81,7 @@ bool NRF24BTHomeDevice::matches(const uint8_t *id) const {
 void NRF24BTHomeDevice::publish_static_info() {
 #ifdef USE_TEXT_SENSOR
   if (this->sender_id_text_sensor_ != nullptr) {
-    char id[12];
-    snprintf(id, sizeof(id), "%02X:%02X:%02X:%02X", this->sender_id_[0], this->sender_id_[1],
-             this->sender_id_[2], this->sender_id_[3]);
-    this->sender_id_text_sensor_->publish_state(id);
+    this->sender_id_text_sensor_->publish_state(this->sender_id_text_);
   }
 #endif
 }
@@ -111,12 +110,11 @@ static std::string button_event_name(uint8_t code) {
 bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
   BTHome::Decoder decoder(data, len);
   if (decoder.status() == BTHome::DecodeStatus::BadHeader) {
-    ESP_LOGW(TAG, "Invalid BTHome service data from %02X:%02X:%02X:%02X", this->sender_id_[0],
-             this->sender_id_[1], this->sender_id_[2], this->sender_id_[3]);
+    ESP_LOGW(TAG, "%s: invalid BTHome service data", this->sender_id_text_);
     return false;
   }
   if (decoder.encrypted()) {
-    ESP_LOGW(TAG, "Encrypted BTHome payload not supported");
+    ESP_LOGW(TAG, "%s: encrypted BTHome payload not supported", this->sender_id_text_);
     return false;
   }
 
@@ -130,122 +128,169 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
   }
 #endif
 
-  // Instance counters: the k-th button/dimmer object addresses instance k.
-  uint8_t button_index = 0;
-  uint8_t dimmer_index = 0;
+  // Read the whole payload first, act afterwards - see Pending in the header for
+  // why nothing may be published or triggered from inside this loop.
+  Pending pending;
 
   BTHome::Decoded obj;
   while (decoder.next(obj)) {
     switch (obj.kind) {
       case BTHome::ObjectKind::PacketId: {
-        // The sender repeats every frame a few times (NO_ACK broadcast);
-        // an unchanged packet id identifies those repeats.
-        if (static_cast<int16_t>(obj.raw) == this->last_packet_id_) {
-          return false;
-        }
-        this->last_packet_id_ = static_cast<int16_t>(obj.raw);
+        pending.packet_id = static_cast<int16_t>(obj.raw);
         break;
       }
       case BTHome::ObjectKind::ButtonEvent: {
-        button_index++;
-        if (obj.event() != static_cast<uint8_t>(BTHome::ButtonEventType::None)) {
-          const std::string name = button_event_name(obj.event());
-          ESP_LOGD(TAG, "Button %u: %s", button_index, name.c_str());
-          for (auto *trigger : this->button_triggers_) {
-            trigger->trigger(button_index, name);
-          }
+        if (pending.button_count < MAX_EVENTS) {
+          pending.buttons[pending.button_count++] = obj.event();
+        } else {
+          pending.overflow = true;
         }
         break;
       }
       case BTHome::ObjectKind::DimmerEvent: {
-        dimmer_index++;
-        if (obj.event() != static_cast<uint8_t>(BTHome::DimmerEventType::None)) {
-          const bool left = obj.event() == static_cast<uint8_t>(BTHome::DimmerEventType::RotateLeft);
-          const int steps = left ? -static_cast<int>(obj.steps()) : static_cast<int>(obj.steps());
-          ESP_LOGD(TAG, "Dimmer %u: %d steps", dimmer_index, steps);
-          for (auto *trigger : this->dimmer_triggers_) {
-            trigger->trigger(dimmer_index, steps);
-          }
+        if (pending.dimmer_count < MAX_EVENTS) {
+          pending.dimmer_events[pending.dimmer_count] = obj.event();
+          pending.dimmer_steps[pending.dimmer_count] = obj.steps();
+          pending.dimmer_count++;
+        } else {
+          pending.overflow = true;
         }
         break;
       }
       case BTHome::ObjectKind::Sensor: {
-        ESP_LOGV(TAG, "Sensor 0x%02X: %.3f", obj.object_id, obj.value);
-#ifdef USE_SENSOR
-        if (obj.is(BTHome::ObjectId::Battery) && this->battery_sensor_ != nullptr) {
-          this->battery_sensor_->publish_state(obj.value);
+        ESP_LOGV(TAG, "%s: sensor 0x%02X: %.3f", this->sender_id_text_, obj.object_id, obj.value);
+        if (obj.is(BTHome::ObjectId::Battery)) {
+          pending.has_battery = true;
+          pending.battery = obj.value;
         }
-        if (obj.is(BTHome::ObjectId::Voltage) && this->voltage_sensor_ != nullptr) {
-          this->voltage_sensor_->publish_state(obj.value);
+        if (obj.is(BTHome::ObjectId::Voltage)) {
+          pending.has_voltage = true;
+          pending.voltage = obj.value;
         }
-#endif
         break;
       }
       case BTHome::ObjectKind::Text: {
-        ESP_LOGV(TAG, "Device name: %.*s", obj.length, reinterpret_cast<const char *>(obj.bytes));
-#ifdef USE_TEXT_SENSOR
-        if (this->name_text_sensor_ != nullptr) {
-          const std::string name(reinterpret_cast<const char *>(obj.bytes), obj.length);
-          if (!this->name_text_sensor_->has_state() || this->name_text_sensor_->state != name) {
-            this->name_text_sensor_->publish_state(name);
-          }
-        }
-#endif
+        pending.name = obj.bytes;
+        pending.name_len = obj.length;
         break;
       }
       case BTHome::ObjectKind::DeviceTypeId: {
-        ESP_LOGV(TAG, "Device type: %u", static_cast<unsigned>(obj.raw));
+        ESP_LOGV(TAG, "%s: device type %u", this->sender_id_text_,
+                 static_cast<unsigned>(obj.raw));
         break;
       }
       case BTHome::ObjectKind::FirmwareVersion: {
+        pending.has_firmware = true;
         // 0xF2 is uint24 [major.minor.patch]; 0xF1 is uint32 with the major
         // byte in bits 24-31 and a trailing build byte [major.minor.patch.build].
-        const bool u32 = obj.is(BTHome::ObjectId::FirmwareVersionU32);
-        if (u32) {
-          ESP_LOGV(TAG, "Firmware: %u.%u.%u.%u", static_cast<unsigned>((obj.raw >> 24) & 0xFF),
-                   static_cast<unsigned>((obj.raw >> 16) & 0xFF),
-                   static_cast<unsigned>((obj.raw >> 8) & 0xFF), static_cast<unsigned>(obj.raw & 0xFF));
-        } else {
-          ESP_LOGV(TAG, "Firmware: %u.%u.%u", static_cast<unsigned>((obj.raw >> 16) & 0xFF),
-                   static_cast<unsigned>((obj.raw >> 8) & 0xFF), static_cast<unsigned>(obj.raw & 0xFF));
-        }
-#ifdef USE_TEXT_SENSOR
-        if (this->firmware_text_sensor_ != nullptr) {
-          char version[16];
-          if (u32) {
-            snprintf(version, sizeof(version), "%u.%u.%u.%u",
-                     static_cast<unsigned>((obj.raw >> 24) & 0xFF),
-                     static_cast<unsigned>((obj.raw >> 16) & 0xFF),
-                     static_cast<unsigned>((obj.raw >> 8) & 0xFF),
-                     static_cast<unsigned>(obj.raw & 0xFF));
-          } else {
-            snprintf(version, sizeof(version), "%u.%u.%u",
-                     static_cast<unsigned>((obj.raw >> 16) & 0xFF),
-                     static_cast<unsigned>((obj.raw >> 8) & 0xFF),
-                     static_cast<unsigned>(obj.raw & 0xFF));
-          }
-          if (!this->firmware_text_sensor_->has_state() ||
-              this->firmware_text_sensor_->state != version) {
-            this->firmware_text_sensor_->publish_state(version);
-          }
-        }
-#endif
+        pending.firmware_u32 = obj.is(BTHome::ObjectId::FirmwareVersionU32);
+        pending.firmware = obj.raw;
         break;
       }
       default:
         break;
     }
   }
+
   const auto decode_status = decoder.status();
   if (decode_status != BTHome::DecodeStatus::End) {
-    ESP_LOGW(TAG, "Malformed BTHome payload, parsed partially (%s)",
+    // Deliberately without recording the packet id: a corrupted copy of a frame
+    // must not dedup away the intact repeats that follow it. The sender sends
+    // each event three times, so dropping one copy costs nothing while
+    // remembering its id would cost the whole event.
+    ESP_LOGW(TAG, "%s: malformed BTHome payload, discarded (%s)", this->sender_id_text_,
              decode_status == BTHome::DecodeStatus::Truncated   ? "truncated"
              : decode_status == BTHome::DecodeStatus::UnknownId ? "unknown object id"
                                                                 : "error");
+    return false;
+  }
+  if (pending.overflow) {
+    ESP_LOGW(TAG, "%s: more than %u event objects in one payload, discarded",
+             this->sender_id_text_, static_cast<unsigned>(MAX_EVENTS));
+    return false;
   }
 
+  // The sender repeats every frame a few times (NO_ACK broadcast); an unchanged
+  // packet id identifies those repeats. Checked here rather than where the
+  // object appeared, so the order of the objects cannot decide the outcome.
+  if (pending.packet_id >= 0) {
+    if (pending.packet_id == this->last_packet_id_) {
+      return false;
+    }
+    this->last_packet_id_ = pending.packet_id;
+  }
+
+  this->commit_(pending);
+  return true;
+}
+
+void NRF24BTHomeDevice::commit_(const Pending &pending) {
+  for (uint8_t i = 0; i < pending.button_count; i++) {
+    if (pending.buttons[i] == static_cast<uint8_t>(BTHome::ButtonEventType::None)) {
+      continue;
+    }
+    const std::string name = button_event_name(pending.buttons[i]);
+    ESP_LOGD(TAG, "%s: button %u: %s", this->sender_id_text_, static_cast<unsigned>(i + 1),
+             name.c_str());
+    for (auto *trigger : this->button_triggers_) {
+      trigger->trigger(i + 1, name);
+    }
+  }
+
+  for (uint8_t i = 0; i < pending.dimmer_count; i++) {
+    const uint8_t event = pending.dimmer_events[i];
+    if (event == static_cast<uint8_t>(BTHome::DimmerEventType::None)) {
+      continue;
+    }
+    const bool left = event == static_cast<uint8_t>(BTHome::DimmerEventType::RotateLeft);
+    const int steps = left ? -static_cast<int>(pending.dimmer_steps[i])
+                           : static_cast<int>(pending.dimmer_steps[i]);
+    ESP_LOGD(TAG, "%s: dimmer %u: %d steps", this->sender_id_text_,
+             static_cast<unsigned>(i + 1), steps);
+    for (auto *trigger : this->dimmer_triggers_) {
+      trigger->trigger(i + 1, steps);
+    }
+  }
+
+#ifdef USE_SENSOR
+  if (pending.has_battery && this->battery_sensor_ != nullptr) {
+    this->battery_sensor_->publish_state(pending.battery);
+  }
+  if (pending.has_voltage && this->voltage_sensor_ != nullptr) {
+    this->voltage_sensor_->publish_state(pending.voltage);
+  }
+#endif
+
+#ifdef USE_TEXT_SENSOR
+  if (pending.name != nullptr && this->name_text_sensor_ != nullptr) {
+    const std::string name(reinterpret_cast<const char *>(pending.name), pending.name_len);
+    if (!this->name_text_sensor_->has_state() || this->name_text_sensor_->state != name) {
+      this->name_text_sensor_->publish_state(name);
+    }
+  }
+  if (pending.has_firmware && this->firmware_text_sensor_ != nullptr) {
+    char version[16];
+    if (pending.firmware_u32) {
+      snprintf(version, sizeof(version), "%u.%u.%u.%u",
+               static_cast<unsigned>((pending.firmware >> 24) & 0xFF),
+               static_cast<unsigned>((pending.firmware >> 16) & 0xFF),
+               static_cast<unsigned>((pending.firmware >> 8) & 0xFF),
+               static_cast<unsigned>(pending.firmware & 0xFF));
+    } else {
+      snprintf(version, sizeof(version), "%u.%u.%u",
+               static_cast<unsigned>((pending.firmware >> 16) & 0xFF),
+               static_cast<unsigned>((pending.firmware >> 8) & 0xFF),
+               static_cast<unsigned>(pending.firmware & 0xFF));
+    }
+    if (!this->firmware_text_sensor_->has_state() ||
+        this->firmware_text_sensor_->state != version) {
+      this->firmware_text_sensor_->publish_state(version);
+    }
+  }
+#endif
+
 #if defined(USE_SENSOR) && defined(USE_TIME)
-  // Once per unique packet (repeats returned above via the dedup).
+  // Once per unique packet: repeats and discarded payloads return before this.
   if (this->last_seen_sensor_ != nullptr && this->rtc_ != nullptr) {
     const auto now = this->rtc_->utcnow();
     if (now.is_valid()) {
@@ -253,7 +298,6 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
     }
   }
 #endif
-  return true;
 }
 
 void NRF24BTHomeDevice::check_timeout(uint32_t now_ms) {
@@ -273,8 +317,7 @@ void NRF24BTHomeDevice::check_timeout(uint32_t now_ms) {
 #ifdef USE_BINARY_SENSOR
   if (this->connected_sensor_ != nullptr &&
       (!this->connected_sensor_->has_state() || this->connected_sensor_->state)) {
-    ESP_LOGW(TAG, "Remote %02X:%02X:%02X:%02X offline (no contact for %u ms)",
-             this->sender_id_[0], this->sender_id_[1], this->sender_id_[2], this->sender_id_[3],
+    ESP_LOGW(TAG, "%s: offline (no contact for %u ms)", this->sender_id_text_,
              static_cast<unsigned>(now_ms - reference));
     this->connected_sensor_->publish_state(false);
   }
@@ -284,8 +327,7 @@ void NRF24BTHomeDevice::check_timeout(uint32_t now_ms) {
 void NRF24BTHomeHub::dump_config() {
   ESP_LOGCONFIG(TAG, "nRF24 BTHome receiver:");
   for (auto *dev : this->devices_) {
-    ESP_LOGCONFIG(TAG, "  Device: %02X:%02X:%02X:%02X", dev->sender_id()[0], dev->sender_id()[1],
-                  dev->sender_id()[2], dev->sender_id()[3]);
+    ESP_LOGCONFIG(TAG, "  Device: %s", dev->sender_id_text());
   }
 }
 
