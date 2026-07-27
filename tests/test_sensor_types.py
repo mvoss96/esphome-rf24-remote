@@ -1,21 +1,23 @@
-"""Checks the sensor-type table against the bthome-cpp version the component
-pins, on the host, without a radio.
+"""Checks the type tables against the bthome-cpp version the component pins, on
+the host, without a radio.
 
 What the component adds to BTHome is meaning: bthome-cpp knows that object 0x02
 is two signed bytes scaled by 0.01, but not that this is a temperature in
-degrees Celsius shown with two decimals. That mapping lives in
-components/nrf24_bthome/sensor.py and nothing in a normal build verifies it - a
-wrong object id produces an entity that looks plausible and reads the wrong
-quantity.
+degrees Celsius shown with two decimals, and it knows 0x21 is one byte without
+knowing it is motion. Those mappings live in components/nrf24_bthome/sensor.py
+and binary_sensor.py, and nothing in a normal build verifies them - a wrong
+object id produces an entity that looks plausible and reads the wrong thing.
 
 So this compiles a small host program against the pinned library, decodes the
-shared test vectors with it, and holds the table to the result:
+shared test vectors with it, and holds the tables to the result:
 
-  * every mapped key has a vector and every vector a mapped key,
-  * the library knows the id, and knows it as a measurement,
+  * every mapped id has a vector and every vector a mapped id,
+  * no id is claimed by two keys,
+  * the library knows each id, and knows it as the kind the table assumes,
   * the value bytes are as wide as the library says the object is,
   * the decoded value is the expected physical one, sign and scale included,
   * accuracy_decimals matches the resolution the scale factor allows,
+  * ids sharing a key really are the same quantity at the same resolution,
   * repeated objects of one id are counted into instances,
   * a payload padded to a fixed slot with 0xFF still yields its measurement.
 
@@ -38,7 +40,11 @@ from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sensor_type_vectors import VECTORS, all_vectors, encoded  # noqa: E402
+from sensor_type_vectors import (  # noqa: E402
+    BINARY_VECTORS,
+    all_vectors,
+    encoded,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 COMPONENT = REPO / "components" / "nrf24_bthome"
@@ -59,35 +65,44 @@ def pinned_version():
     return m.group(1)
 
 
-def sensor_types():
-    """The SENSOR_TYPES table, read as data.
+def parse_table(filename, variable):
+    """A table from the component, read as data.
 
-    Parsed rather than imported: sensor.py pulls in esphome codegen and the
+    Parsed rather than imported: those modules pull in esphome codegen and the
     sibling nrf24 component, which only resolve inside an esphome build. The
-    names in the table are resolved against esphome.const, so a constant that
-    does not exist there fails here too.
+    names are resolved against esphome.const, so a constant that does not exist
+    there fails here too.
     """
     from esphome import const
 
-    tree = ast.parse((COMPONENT / "sensor.py").read_text(encoding="utf-8"))
+    tree = ast.parse((COMPONENT / filename).read_text(encoding="utf-8"))
+    aliases = {}
     node = None
     for stmt in tree.body:
-        if isinstance(stmt, ast.Assign) and getattr(stmt.targets[0], "id", "") == "SENSOR_TYPES":
+        if not isinstance(stmt, ast.Assign) or not hasattr(stmt.targets[0], "id"):
+            continue
+        name = stmt.targets[0].id
+        if name == variable:
             node = stmt.value
-            break
+        elif isinstance(stmt.value, (ast.Constant, ast.Name)):
+            # Short local aliases (MEAS, TOTAL) so the table stays readable.
+            aliases[name] = stmt.value
+
     if node is None:
-        raise SystemExit("SENSOR_TYPES not found in sensor.py")
+        raise SystemExit(f"{variable} not found in {filename}")
 
     def resolve(expr):
         if isinstance(expr, ast.Constant):
             return expr.value
         if isinstance(expr, ast.Name):
+            if expr.id in aliases:
+                return resolve(aliases[expr.id])
             if not hasattr(const, expr.id):
                 raise SystemExit(f"{expr.id} is not a constant in esphome.const")
             return getattr(const, expr.id)
         if isinstance(expr, ast.Tuple):
             return tuple(resolve(e) for e in expr.elts)
-        raise SystemExit(f"unsupported expression in SENSOR_TYPES: {ast.dump(expr)}")
+        raise SystemExit(f"unsupported expression in {variable}: {ast.dump(expr)}")
 
     return {resolve(k): resolve(v) for k, v in zip(node.keys, node.values)}
 
@@ -140,10 +155,14 @@ def run_probe(exe, payloads):
                 "kind": parts[2], "width": int(parts[3]),
                 "signed": parts[4] == "1", "factor": float(parts[5])}
         elif parts[0] == "FRAME":
-            frame = frames.setdefault(int(parts[1]), {"sensors": [], "status": None})
+            frame = frames.setdefault(
+                int(parts[1]), {"sensors": [], "binaries": [], "status": None})
             if parts[2] == "SENSOR":
                 frame["sensors"].append(
                     (int(parts[3], 16), int(parts[4]), float(parts[5])))
+            elif parts[2] == "BINARY":
+                frame["binaries"].append(
+                    (int(parts[3], 16), int(parts[4]), parts[5] == "1"))
             else:
                 frame["status"] = (parts[3], int(parts[4], 16))
     return layouts, frames
@@ -181,7 +200,8 @@ def main():
     args = ap.parse_args()
 
     version = pinned_version()
-    table = sensor_types()
+    sensors = parse_table("sensor.py", "SENSOR_TYPES")
+    binaries = parse_table("binary_sensor.py", "BINARY_TYPES")
     workdir = Path(tempfile.mkdtemp(prefix="bthome-types-"))
     print(f"component pins bthome-cpp {version}", flush=True)
 
@@ -196,43 +216,66 @@ def main():
 
     vectors = all_vectors()
     payloads = [HDR + encoded(oid, b) for _, oid, _, b, _, _, _ in vectors]
+    first_binary = len(payloads) + 1
+    payloads += [HDR + encoded(oid, b) for _, oid, b, _ in BINARY_VECTORS]
     # Two objects of one id in one payload: the second must be instance 2 rather
     # than overwrite the first.
-    instance_payload = HDR + encoded(0x02, "2909") + encoded(0x02, "2EFB")
-    payloads.append(instance_payload)
+    instance_frame = len(payloads) + 1
+    payloads.append(HDR + encoded(0x02, "2909") + encoded(0x02, "2EFB"))
     # A measurement whose last byte is 0xFF, followed by the padding of a
     # 32-byte slot (28 bytes of service data). Decoding has to reach the value
     # and then stop on the padding, not mistake the value for padding.
+    padded_frame = len(payloads) + 1
     padded = HDR + encoded(0x02, "9CFF")
     padded += "FF" * (28 - len(padded) // 2)
     payloads.append(padded)
 
     layouts, frames = run_probe(exe, payloads)
 
-    # --- V1: the table and the vectors cover each other ------------------------
-    covered = {key for key, *_ in vectors}
-    missing = sorted(set(table) - covered)
-    extra = sorted(covered - set(table))
-    verdict("V1 every mapped type has a vector and every vector a mapped type",
+    sensor_ids = {oid: key for key, entry in sensors.items() for oid in entry[0]}
+    binary_ids = {oid: key for key, (oid, _) in binaries.items()}
+
+    # --- V1: the tables and the vectors cover each other -----------------------
+    covered = {oid for _, oid, *_ in vectors}
+    missing = sorted(f"0x{o:02X} ({sensor_ids[o]})" for o in set(sensor_ids) - covered)
+    extra = sorted(f"0x{o:02X}" for o in covered - set(sensor_ids))
+    verdict("V1 every mapped measurement id has a vector and every vector an id",
             not missing and not extra,
-            f"{len(table)} types mapped, {len(covered)} covered"
+            f"{len(sensors)} keys over {len(sensor_ids)} ids, {len(covered)} covered"
             + (f", no vector for {missing}" if missing else "")
             + (f", vector without a mapping: {extra}" if extra else ""))
 
-    # --- V2: the object ids agree ---------------------------------------------
-    wrong_id = [f"{key}: table 0x{table[key][0]:02X} vs vector 0x{oid:02X}"
-                for key, oid, *_ in vectors if key in table and table[key][0] != oid]
-    verdict("V2 the object id in the table is the one the vector encodes",
-            not wrong_id, "; ".join(wrong_id) or f"all {len(vectors)} vectors agree")
+    # --- V2: nothing is claimed twice -----------------------------------------
+    # Two keys on one id would publish one object onto two entities, and only
+    # one of them can carry the right unit.
+    seen, twice = {}, []
+    for key, entry in sensors.items():
+        for oid in entry[0]:
+            if oid in seen:
+                twice.append(f"0x{oid:02X}: {seen[oid]} and {key}")
+            seen[oid] = key
+    for key, (oid, _) in binaries.items():
+        if oid in seen:
+            twice.append(f"0x{oid:02X}: {seen[oid]} and {key}")
+        seen[oid] = key
+    verdict("V2 no object id is claimed by two keys",
+            not twice, "; ".join(twice) or f"{len(seen)} ids, each mapped once")
 
-    # --- V3: the library knows every mapped id, as a measurement ---------------
-    unknown = [f"{key} (0x{oid:02X})" for key, oid, *_ in vectors
-               if oid not in layouts or layouts[oid]["kind"] != "Sensor"]
-    verdict("V3 the pinned library knows every mapped id and treats it as a sensor",
-            not unknown, "; ".join(unknown) or f"all {len(set(table))} ids known as Sensor")
+    # --- V3: the library knows every mapped id, as the kind assumed ------------
+    wrong_kind = [f"{sensor_ids[o]} (0x{o:02X}): {layouts.get(o, {}).get('kind', 'unknown')}"
+                  for o in sorted(sensor_ids)
+                  if layouts.get(o, {}).get("kind") != "Sensor"]
+    wrong_kind += [f"{binary_ids[o]} (0x{o:02X}): {layouts.get(o, {}).get('kind', 'unknown')}"
+                   for o in sorted(binary_ids)
+                   if layouts.get(o, {}).get("kind") != "Binary"]
+    verdict("V3 the pinned library knows every mapped id and agrees on its kind",
+            not wrong_kind,
+            "; ".join(wrong_kind)
+            or f"{len(sensor_ids)} measurements, {len(binary_ids)} binaries")
 
     # --- V4: the vectors are as wide as the objects are ------------------------
-    bad_width = [f"{key}: {len(b) // 2} bytes for a {layouts[oid]['width']}-byte object"
+    bad_width = [f"{key} 0x{oid:02X}: {len(b) // 2} bytes for a "
+                 f"{layouts[oid]['width']}-byte object"
                  for key, oid, _, b, *_ in vectors
                  if oid in layouts and len(b) // 2 != layouts[oid]["width"]]
     verdict("V4 each vector carries exactly the object's value bytes",
@@ -242,7 +285,7 @@ def main():
     # An arithmetic check on the vector itself, independent of the decoder: it
     # keeps a wrong expectation from being blessed by a decoder that shares the
     # same mistake.
-    bad_math = [f"{key}: {raw} x {layouts[oid]['factor']:.6g} != {value}"
+    bad_math = [f"{key} 0x{oid:02X}: {raw} x {layouts[oid]['factor']:.6g} != {value}"
                 for key, oid, raw, _, value, _, _ in vectors
                 if oid in layouts and not close(raw * layouts[oid]["factor"], value)]
     verdict("V5 the expected value is the raw integer times the library's factor",
@@ -251,65 +294,97 @@ def main():
     # --- V6: the decoder produces the expected value ---------------------------
     bad_value = []
     for n, (key, oid, _, _, value, _, _) in enumerate(vectors, start=1):
-        sensors = frames.get(n, {}).get("sensors", [])
-        got = [v for i, _, v in sensors if i == oid]
+        got = [v for i, _, v in frames.get(n, {}).get("sensors", []) if i == oid]
         if len(got) != 1 or not close(got[0], value):
-            bad_value.append(f"{key}: expected {value}, decoded {got or 'nothing'}")
+            bad_value.append(f"{key} 0x{oid:02X}: expected {value}, decoded {got or 'nothing'}")
     verdict("V6 every vector decodes to its expected physical value",
             not bad_value,
             "; ".join(bad_value) or f"{len(vectors)} vectors decoded, sign and scale intact")
 
     # --- V7: every payload ends cleanly ----------------------------------------
-    bad_status = [f"{vectors[n - 1][0]}: {frames[n]['status']}"
-                  for n in range(1, len(vectors) + 1)
+    bad_status = [f"{payloads[n - 1]}: {frames[n]['status']}"
+                  for n in range(1, len(payloads) - 1)
                   if frames.get(n, {}).get("status", ("?",))[0] != "End"]
     verdict("V7 no vector leaves bytes over or trips the decoder",
             not bad_status, "; ".join(bad_status) or "all payloads reach End")
 
     # --- V8: accuracy matches the resolution -----------------------------------
     bad_acc = []
+    for key, entry in sensors.items():
+        factors = {layouts[o]["factor"] for o in entry[0] if o in layouts}
+        if len(factors) != 1:
+            continue  # V9's business
+        want = decimals_of(factors.pop())
+        if entry[3] != want:
+            bad_acc.append(f"{key}: table shows {entry[3]}, the factor resolves {want}")
     for key, oid, _, _, _, _, dec in vectors:
-        if oid not in layouts or key not in table:
-            continue
-        want = decimals_of(layouts[oid]["factor"])
-        if table[key][3] != want:
-            bad_acc.append(f"{key}: table shows {table[key][3]}, "
-                           f"factor {layouts[oid]['factor']:.6g} resolves {want}")
-        elif dec != want:
-            bad_acc.append(f"{key}: vector expects {dec} decimals, factor resolves {want}")
+        if oid in sensor_ids and dec != sensors[sensor_ids[oid]][3]:
+            bad_acc.append(f"{key} 0x{oid:02X}: vector expects {dec} decimals, "
+                           f"table shows {sensors[sensor_ids[oid]][3]}")
     verdict("V8 accuracy_decimals matches what the scale factor resolves",
             not bad_acc, "; ".join(bad_acc) or "no type over- or understates its precision")
 
-    # --- V9: signed types decode below zero ------------------------------------
+    # --- V9: ids sharing a key are the same quantity ---------------------------
+    # The rule for folding several ids onto one entity: they may differ in width
+    # or sign, never in resolution. One entity cannot carry two accuracies, so a
+    # key over two factors would show a precision that depends on which id
+    # happened to arrive.
+    mixed = []
+    for key, entry in sensors.items():
+        if len(entry[0]) < 2:
+            continue
+        factors = {f"{layouts[o]['factor']:.6g}" for o in entry[0] if o in layouts}
+        if len(factors) != 1:
+            mixed.append(f"{key}: factors {sorted(factors)}")
+    merged = {k: v[0] for k, v in sensors.items() if len(v[0]) > 1}
+    verdict("V9 ids folded onto one key differ in width or sign only",
+            not mixed,
+            "; ".join(mixed) or
+            ", ".join(f"{k} ({len(ids)} ids)" for k, ids in sorted(merged.items())))
+
+    # --- V10: negative measurements keep their sign ----------------------------
     negatives = [(n, v) for n, v in enumerate(vectors, start=1) if v[2] < 0]
-    lost_sign = sorted({v[0] for n, v in negatives
+    lost_sign = sorted({f"{v[0]} 0x{v[1]:02X}" for n, v in negatives
                         if not any(val < 0
                                    for _, _, val in frames.get(n, {}).get("sensors", []))})
-    unsigned = sorted({v[0] for _, v in negatives
+    unsigned = sorted({f"{v[0]} 0x{v[1]:02X}" for _, v in negatives
                        if not layouts.get(v[1], {}).get("signed", False)})
-    verdict("V9 negative measurements keep their sign",
+    verdict("V10 negative measurements keep their sign",
             not lost_sign and not unsigned,
-            f"{len(negatives)} negative vectors on "
-            f"{sorted({v[0] for _, v in negatives})}"
+            f"{len(negatives)} negative vectors"
             + (f", sign lost on {lost_sign}" if lost_sign else "")
             + (f", library says unsigned: {unsigned}" if unsigned else ""))
 
-    # --- V10: instances ---------------------------------------------------------
-    inst = frames.get(len(vectors) + 1, {}).get("sensors", [])
+    # --- V11: the binary objects ------------------------------------------------
+    bad_binary = []
+    for offset, (key, oid, _, state) in enumerate(BINARY_VECTORS):
+        got = [s for i, _, s in frames.get(first_binary + offset, {}).get("binaries", [])
+               if i == oid]
+        if got != [state]:
+            bad_binary.append(f"{key} 0x{oid:02X}: expected {state}, decoded {got or 'nothing'}")
+    covered_bin = {oid for _, oid, _, _ in BINARY_VECTORS}
+    no_vector = sorted(f"0x{o:02X} ({binary_ids[o]})" for o in set(binary_ids) - covered_bin)
+    verdict("V11 every binary object decodes to the state it was sent as",
+            not bad_binary and not no_vector,
+            "; ".join(bad_binary + no_vector)
+            or f"{len(binaries)} binary types, {len(BINARY_VECTORS)} vectors, both states seen")
+
+    # --- V12: instances ---------------------------------------------------------
+    inst = frames.get(instance_frame, {}).get("sensors", [])
     want_inst = [(0x02, 1, 23.45), (0x02, 2, -12.34)]
     ok_inst = (len(inst) == 2
                and all(i == wi and n == wn and close(v, wv)
                        for (i, n, v), (wi, wn, wv) in zip(inst, want_inst)))
-    verdict("V10 a second object of the same id is instance 2, not a replacement",
+    verdict("V12 a second object of the same id is instance 2, not a replacement",
             ok_inst, f"decoded {[(hex(i), n, round(v, 2)) for i, n, v in inst]}")
 
-    # --- V11: padding -----------------------------------------------------------
-    pad_frame = frames.get(len(vectors) + 2, {})
+    # --- V13: padding -----------------------------------------------------------
+    pad_frame = frames.get(padded_frame, {})
     pad_sensors = pad_frame.get("sensors", [])
     pad_status = pad_frame.get("status")
     ok_pad = (len(pad_sensors) == 1 and close(pad_sensors[0][2], -1.0)
               and pad_status == ("UnknownId", 0xFF))
-    verdict("V11 a value ending in 0xFF survives the padding of a fixed slot",
+    verdict("V13 a value ending in 0xFF survives the padding of a fixed slot",
             ok_pad,
             f"decoded {[(hex(i), n, v) for i, n, v in pad_sensors]}, stopped at {pad_status}"
             " (0xFF is not an object id, so this is the end of the data)")

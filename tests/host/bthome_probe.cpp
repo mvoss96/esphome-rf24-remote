@@ -98,29 +98,31 @@ int main() {
     // Instances are counted per payload and per object id, the way the
     // firmware does it: the k-th occurrence of an id addresses the sensor
     // configured with index k.
-    uint8_t seen_ids[16] = {0};
-    uint8_t seen_instances[16] = {0};
+    // Eight distinct ids, the same bound the firmware uses - a 32-byte frame
+    // cannot carry more, and a stand-in that counted further would not stand in.
+    uint8_t seen_ids[8] = {0};
+    uint8_t seen_instances[8] = {0};
     uint8_t seen_count = 0;
+    auto instance_of = [&](uint8_t object_id) -> uint8_t {
+      for (uint8_t i = 0; i < seen_count; i++) {
+        if (seen_ids[i] == object_id) return ++seen_instances[i];
+      }
+      if (seen_count < sizeof(seen_ids)) {
+        seen_ids[seen_count] = object_id;
+        seen_instances[seen_count] = 1;
+        seen_count++;
+      }
+      return 1;
+    };
 
     while (decoder.next(obj)) {
-      if (obj.kind != BTHome::ObjectKind::Sensor) continue;
-      uint8_t instance = 0;
-      for (uint8_t i = 0; i < seen_count; i++) {
-        if (seen_ids[i] == obj.object_id) {
-          instance = ++seen_instances[i];
-          break;
-        }
+      if (obj.kind == BTHome::ObjectKind::Sensor) {
+        std::printf("FRAME %u SENSOR 0x%02X %u %.6f\n", frame, obj.object_id,
+                    instance_of(obj.object_id), static_cast<double>(obj.value));
+      } else if (obj.kind == BTHome::ObjectKind::Binary) {
+        std::printf("FRAME %u BINARY 0x%02X %u %u\n", frame, obj.object_id,
+                    instance_of(obj.object_id), obj.raw != 0 ? 1u : 0u);
       }
-      if (instance == 0) {
-        instance = 1;
-        if (seen_count < sizeof(seen_ids)) {
-          seen_ids[seen_count] = obj.object_id;
-          seen_instances[seen_count] = 1;
-          seen_count++;
-        }
-      }
-      std::printf("FRAME %u SENSOR 0x%02X %u %.6f\n", frame, obj.object_id, instance,
-                  static_cast<double>(obj.value));
     }
     // The object id goes out with the status because it is what decides the
     // outcome for UnknownId: the firmware treats a stop on 0xFF as the end of

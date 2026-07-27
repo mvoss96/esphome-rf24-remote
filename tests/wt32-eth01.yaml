@@ -201,8 +201,8 @@ sensor:
     last_seen:
       name: "Sensor Node Last Seen"
 
-  # Every mapped type at once. The entity name is the YAML key verbatim so the
-  # radio bench can derive it from the same table it takes its vectors from -
+  # Every mapped measurement at once. The entity name is the YAML key verbatim so
+  # the radio bench can derive it from the same table it takes its vectors from -
   # a renamed entity would otherwise quietly stop being checked. All internal:
   # these exist to be read off the log, not to appear in Home Assistant.
   - platform: nrf24_bthome
@@ -224,6 +224,9 @@ sensor:
       internal: true
     mass:
       name: "P mass"
+      internal: true
+    mass_lb:
+      name: "P mass_lb"
       internal: true
     dewpoint:
       name: "P dewpoint"
@@ -255,6 +258,12 @@ sensor:
     moisture:
       name: "P moisture"
       internal: true
+    humidity_u8:
+      name: "P humidity_u8"
+      internal: true
+    moisture_u8:
+      name: "P moisture_u8"
+      internal: true
     rotation:
       name: "P rotation"
       internal: true
@@ -273,20 +282,77 @@ sensor:
     speed:
       name: "P speed"
       internal: true
+    temperature_c1:
+      name: "P temperature_c1"
+      internal: true
     uv_index:
       name: "P uv_index"
       internal: true
     volume:
       name: "P volume"
       internal: true
+    volume_ml:
+      name: "P volume_ml"
+      internal: true
+    volume_flow_rate:
+      name: "P volume_flow_rate"
+      internal: true
+    voltage_centi:
+      name: "P voltage_centi"
+      internal: true
     gas:
       name: "P gas"
+      internal: true
+    volume_u32:
+      name: "P volume_u32"
+      internal: true
+    water:
+      name: "P water"
+      internal: true
+    timestamp:
+      name: "P timestamp"
+      internal: true
+    acceleration:
+      name: "P acceleration"
+      internal: true
+    gyroscope:
+      name: "P gyroscope"
+      internal: true
+    volume_storage:
+      name: "P volume_storage"
       internal: true
     conductivity:
       name: "P conductivity"
       internal: true
+    temperature_s8:
+      name: "P temperature_s8"
+      internal: true
+    temperature_s8_035:
+      name: "P temperature_s8_035"
+      internal: true
+    direction:
+      name: "P direction"
+      internal: true
     precipitation:
       name: "P precipitation"
+      internal: true
+    channel:
+      name: "P channel"
+      internal: true
+    rotational_speed:
+      name: "P rotational_speed"
+      internal: true
+    speed_s32:
+      name: "P speed_s32"
+      internal: true
+    acceleration_s32:
+      name: "P acceleration_s32"
+      internal: true
+    light_level:
+      name: "P light_level"
+      internal: true
+    settings_revision:
+      name: "P settings_revision"
       internal: true
   # A second sensor for the same object id: index 2 takes the second
   # temperature in a payload, which needs its own platform entry.
@@ -317,6 +383,94 @@ binary_sensor:
     nrf24_bthome_device_id: dongle_b
     connected:
       name: "B Connected"
+      internal: true
+
+  # Every binary object, same naming rule as the measurements above.
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: type_probe
+    generic:
+      name: "B generic"
+      internal: true
+    power:
+      name: "B power"
+      internal: true
+    opening:
+      name: "B opening"
+      internal: true
+    battery_low:
+      name: "B battery_low"
+      internal: true
+    battery_charging:
+      name: "B battery_charging"
+      internal: true
+    carbon_monoxide:
+      name: "B carbon_monoxide"
+      internal: true
+    cold:
+      name: "B cold"
+      internal: true
+    connectivity:
+      name: "B connectivity"
+      internal: true
+    door:
+      name: "B door"
+      internal: true
+    garage_door:
+      name: "B garage_door"
+      internal: true
+    gas:
+      name: "B gas"
+      internal: true
+    heat:
+      name: "B heat"
+      internal: true
+    light:
+      name: "B light"
+      internal: true
+    lock:
+      name: "B lock"
+      internal: true
+    moisture:
+      name: "B moisture"
+      internal: true
+    motion:
+      name: "B motion"
+      internal: true
+    moving:
+      name: "B moving"
+      internal: true
+    occupancy:
+      name: "B occupancy"
+      internal: true
+    plug:
+      name: "B plug"
+      internal: true
+    presence:
+      name: "B presence"
+      internal: true
+    problem:
+      name: "B problem"
+      internal: true
+    running:
+      name: "B running"
+      internal: true
+    safety:
+      name: "B safety"
+      internal: true
+    smoke:
+      name: "B smoke"
+      internal: true
+    sound:
+      name: "B sound"
+      internal: true
+    tamper:
+      name: "B tamper"
+      internal: true
+    vibration:
+      name: "B vibration"
+      internal: true
+    window:
+      name: "B window"
       internal: true
 
 text_sensor:

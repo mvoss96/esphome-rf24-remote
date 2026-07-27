@@ -93,6 +93,12 @@ class NRF24BTHomeDevice {
 
 #ifdef USE_BINARY_SENSOR
   void set_connected_binary_sensor(binary_sensor::BinarySensor *s) { this->connected_sensor_ = s; }
+  // A BTHome binary object - motion, door, smoke and the rest. One byte, 0 or 1,
+  // and otherwise handled exactly like a measurement: buffered until the payload
+  // has been read to the end, and addressed by instance.
+  void add_object_binary_sensor(uint8_t object_id, uint8_t index, binary_sensor::BinarySensor *s) {
+    this->object_binary_sensors_.push_back(ObjectBinarySensor{object_id, index, s, false, false});
+  }
 #endif
 #ifdef USE_TIME
   void set_time(time::RealTimeClock *rtc) { this->rtc_ = rtc; }
@@ -177,6 +183,14 @@ class NRF24BTHomeDevice {
 #endif
 #ifdef USE_BINARY_SENSOR
   binary_sensor::BinarySensor *connected_sensor_{nullptr};
+  struct ObjectBinarySensor {
+    uint8_t object_id;
+    uint8_t index;  // 1-based occurrence of that object id within one payload
+    binary_sensor::BinarySensor *sensor;
+    bool has_pending;
+    bool pending;
+  };
+  std::vector<ObjectBinarySensor> object_binary_sensors_;
 #endif
 #ifdef USE_TIME
   time::RealTimeClock *rtc_{nullptr};

@@ -143,6 +143,13 @@ binary_sensor:
     nrf24_bthome_device_id: remote1
     connected:
       name: "Remote 1 Connected"
+    # A binary object the sender puts in a frame, next to the link state the
+    # receiver observes - the two look alike in YAML and come from opposite
+    # directions, so both are compiled here.
+    motion:
+      name: "Remote 1 Motion"
+    generic:
+      name: "Remote 1 Generic"
 
 text_sensor:
   - platform: nrf24_bthome

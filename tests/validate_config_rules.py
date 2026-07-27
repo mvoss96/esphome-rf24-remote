@@ -334,11 +334,40 @@ check("R26 an index past the last countable instance is refused",
 # entity_category=None explicitly rather than leaving it out made esphome
 # validate None as a string, and only a config run says so.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sensor_type_vectors import VECTORS  # noqa: E402
+from sensor_type_vectors import BINARY_VECTORS, VECTORS  # noqa: E402
 
-check(f"R27 all {len(VECTORS)} mapped measurement types validate on one device",
+# dict.fromkeys, not set: several ids share a key, and a YAML mapping may not
+# repeat one.
+SENSOR_KEYS = list(dict.fromkeys(key for key, *_ in VECTORS))
+BINARY_KEYS = list(dict.fromkeys(key for key, *_ in BINARY_VECTORS))
+
+check(f"R27 all {len(SENSOR_KEYS)} mapped measurement types validate on one device",
       PROBE_DEVICE + "".join(f'    {key}:\n      name: "P {key}"\n'
-                             for key, *_ in VECTORS))
+                             for key in SENSOR_KEYS))
+
+check(f"R28 all {len(BINARY_KEYS)} binary types validate on one device",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+binary_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+""" + "".join(f'    {key}:\n      name: "B {key}"\n' for key in BINARY_KEYS))
+
+check("R29 a binary type the component does not map is refused",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+binary_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+    tilt:
+      name: X
+""", ANY)
 
 print("\n--- summary ---")
 for name, ok, detail in results:
