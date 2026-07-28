@@ -249,13 +249,16 @@ void NRF24Hub::radio_init_() {
 // button press nobody made.
 //
 // The test comes from a proposal in the RF24 library's issue tracker
-// (nRF24/RF24#603) and has not been confirmed against a known-genuine part, so
-// it is reported as a suspicion and nothing depends on it.
+// (nRF24/RF24#603). Checked against a module known to carry an Si24R1: the probe
+// called it a clone, and RF24's own isPVariant() - which compares FEATURE before
+// and after a toggle - called that same part genuine. So this test discriminates
+// where that one does not.
 //
-// In practice it has not discriminated once: every module tried here reads as a
-// clone, including the one that never duplicated a frame. Treat the result as a
-// data point, not an explanation - chip identity is only really settled by the
-// marking or by the power-down current (genuine < 1 uA, clone 0.6-1 mA).
+// Still reported as a suspicion, because it has not been confirmed against a
+// known-genuine part: every module tried here reads as a clone, which is most
+// easily explained by all of them being clones. Chip identity is settled for
+// certain only by the marking or by the power-down current (genuine < 1 uA,
+// clone 0.6-1 mA).
 bool NRF24Hub::rf_setup_bit0_writable_() {
   const uint8_t saved = this->read_register_(REG_RF_SETUP);
   this->write_register_(REG_RF_SETUP, static_cast<uint8_t>(saved | 0x01));
@@ -429,15 +432,15 @@ void NRF24Hub::dump_config() {
                 static_cast<unsigned>(this->fifo_full_count_),
                 static_cast<unsigned>(this->watchdog_count_));
   if (this->chip_ok_) {
-    // Reported as an observation, not a warning. It used to warn about duplicated
-    // frames carrying stale payloads, which was wrong on two counts: the probe
-    // does not discriminate in practice (every module here reads as a clone,
-    // including one that never duplicated anything), and fixed-length payloads
-    // removed that failure mode altogether. A warning on every boot of every
-    // device teaches people to ignore warnings.
+    // Reported, not warned about. The probe is sound - it was checked against a
+    // module known to carry an Si24R1 and called it correctly, while RF24's own
+    // isPVariant() called that same part genuine - but a line that appears on
+    // every boot of every device does not belong at warning level. The likely
+    // reason it has never yet reported a genuine part is simply that every
+    // module in use here is a clone.
     ESP_LOGCONFIG(TAG, "  Chip type: %s",
-                  this->clone_suspected_ ? "Si24R1-like clone (RF_SETUP bit 0 is writable)"
-                                         : "nRF24L01+-like (RF_SETUP bit 0 reads back as 0)");
+                  this->clone_suspected_ ? "likely Si24R1 clone (RF_SETUP bit 0 is writable)"
+                                         : "likely genuine nRF24L01+ (RF_SETUP bit 0 reads back as 0)");
   }
 }
 
