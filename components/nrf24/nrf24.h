@@ -83,13 +83,16 @@ class NRF24Hub : public Component,
   uint32_t rx_short_frames() const { return this->rx_short_frames_; }
   uint16_t bad_length_count() const { return this->bad_length_count_; }
   uint16_t watchdog_count() const { return this->watchdog_count_; }
-  // Payloads that were sitting in the FIFO although no interrupt had arrived.
-  // Anything but zero means the IRQ path is not carrying, and the receiver is
-  // running on the poll below it.
+  // Times a payload was found in the FIFO although no interrupt had been
+  // delivered. Anything but zero means the interrupt is not carrying its share
+  // and the receiver is running on the per-loop read alone - slower, but never
+  // silent, which is the whole point of reading on every loop.
   uint16_t irq_missed_count() const { return this->irq_missed_count_; }
 
  protected:
-  static void IRAM_ATTR s_irq_isr(NRF24Hub *self) { self->irq_flag_ = true; }
+  // Defined out of line: it wakes the main loop, and that pulls in a header the
+  // host test harness has no business needing.
+  static void IRAM_ATTR s_irq_isr(NRF24Hub *self);
 
   void radio_init_();
   // Writes bit 0 of RF_SETUP and reports whether it stuck. See the definition
@@ -102,7 +105,9 @@ class NRF24Hub : public Component,
   uint8_t read_payload_width_();
   void read_payload_(uint8_t *data, uint8_t len);
   uint8_t pipe_payload_size_(uint8_t pipe) const;
-  void drain_fifo_();
+  // `after_interrupt` says whether this run was prompted by the IRQ. Only used
+  // to tell whether the interrupt is still carrying its share.
+  void drain_fifo_(bool after_interrupt);
 
   GPIOPin *ce_pin_{nullptr};
   InternalGPIOPin *irq_pin_{nullptr};
@@ -123,8 +128,7 @@ class NRF24Hub : public Component,
   uint32_t rx_short_frames_{0};        // ... of which shorter than a full slot
   uint16_t bad_length_count_{0};       // payload widths the chip reported as 0 or >32
   uint16_t watchdog_count_{0};         // radio re-inits forced by the watchdog
-  uint32_t last_poll_ms_{0};           // throttle for the safety-net FIFO poll
-  uint16_t irq_missed_count_{0};       // payloads found by that poll, not by the IRQ
+  uint16_t irq_missed_count_{0};       // payloads found without an interrupt
   bool chip_ok_{false};
   bool regs_ok_{false};
   bool clone_suspected_{false};

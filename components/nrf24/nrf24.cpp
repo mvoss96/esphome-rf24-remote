@@ -1,4 +1,13 @@
 #include "nrf24.h"
+
+// Waking the main loop from the interrupt is what makes the interrupt worth
+// having; without it the frame waits for the next scheduled loop either way.
+// Guarded because it is a newer part of the core - a build without it still
+// works, only with the loop's own interval as the floor for latency.
+#if __has_include("esphome/core/wake.h")
+#include "esphome/core/wake.h"
+#define NRF24_HAS_LOOP_WAKE
+#endif
 #include "esphome/core/log.h"
 
 namespace esphome {
@@ -268,13 +277,31 @@ uint8_t NRF24Hub::pipe_payload_size_(uint8_t pipe) const {
   return this->pipes_[pipe - 1].payload_size;
 }
 
-void NRF24Hub::drain_fifo_() {
+void NRF24Hub::drain_fifo_(bool after_interrupt) {
+  bool counted = false;
   // Drain the 3-deep RX FIFO; the guard keeps a flooded channel from
   // starving the rest of the loop.
   for (uint8_t guard = 0; guard < 8; guard++) {
     const uint8_t fifo = this->read_register_(REG_FIFO_STATUS);
     if (fifo & FIFO_RX_EMPTY) {
-      return;  // nothing queued: the interrupt will bring us back
+      // Nothing queued. If the chip's interrupt flag is nevertheless still set,
+      // clear it: nothing else would, and while it stands the level-active line
+      // stays down so no further edge can be produced. One register read on an
+      // idle loop, and it keeps the interrupt able to do its job.
+      if (this->read_register_(REG_STATUS) & STATUS_RX_DR) {
+        this->write_register_(REG_STATUS, STATUS_RX_DR);
+      }
+      return;
+    }
+    // A payload was waiting although no interrupt had been delivered. Counted
+    // once per run, and only if none arrived while we were looking either - the
+    // register read above takes long enough for a handler to run, and counting
+    // that would report ordinary latency as a fault.
+    if (!after_interrupt && !counted && !this->irq_flag_) {
+      counted = true;
+      if (this->irq_missed_count_ < 0xFFFF) {
+        this->irq_missed_count_++;
+      }
     }
     // A full FIFO means frames arriving right now are being dropped by the
     // chip, and it has no lost-frame counter to ask afterwards - so this is the
@@ -359,67 +386,36 @@ void NRF24Hub::drain_fifo_() {
   this->irq_flag_ = true;
 }
 
+void IRAM_ATTR NRF24Hub::s_irq_isr(NRF24Hub *self) {
+  self->irq_flag_ = true;
+#ifdef NRF24_HAS_LOOP_WAKE
+  // The handler does no work of its own - the FIFO is read from loop(), where
+  // blocking SPI belongs. So what the interrupt is actually for is arriving
+  // *early*: without this the frame waits for the next scheduled loop, which by
+  // default is up to 16 ms away, and three frames fill the 3-deep FIFO in about
+  // four. That is the difference between the interrupt earning its pin and
+  // being decoration.
+  wake_loop_any_context();
+#endif
+}
+
 void NRF24Hub::loop() {
-  if (this->irq_pin_ == nullptr) {
-    this->drain_fifo_();
-  } else if (this->irq_flag_) {
-    // Clear before draining: a frame arriving mid-drain re-arms the flag.
-    this->irq_flag_ = false;
-    this->drain_fifo_();
-  } else if (millis() - this->last_poll_ms_ > 250) {
-    // The interrupt alone cannot be trusted to keep arriving, so the FIFO is
-    // also looked at on a timer. Not a workaround - the correct pairing for a
-    // level-active source watched by an edge detector.
-    //
-    // The chip pulls IRQ low for as long as RX_DR is set and lets it go when
-    // RX_DR is cleared. Under sustained traffic the next payload sets RX_DR
-    // again before the line has returned high, so the line simply never rises,
-    // no further falling edge is ever produced, and the handler stops being
-    // called. Nothing about the radio is wrong at that point: it keeps
-    // receiving, and every register reads back exactly as configured. The
-    // receiver just stops looking, for good.
-    //
-    // Measured on the lab hub under load on the dynamic pipe:
-    //
-    //   No interrupt for a waiting payload: FIFO_STATUS=12 STATUS=42 IRQ pin=0
-    //
-    // - the RX FIFO full, RX_DR set, the line still down. Twice before that the
-    // same receiver had gone silent for good, and a watchdog re-init had not
-    // brought it back, which fits: re-initializing the radio cannot restore an
-    // interrupt that is no longer being delivered.
-    //
-    // Four times a second costs two SPI reads each and bounds the outage at a
-    // quarter second, which is inside the window a sender's repeats span.
-    // Finding a payload here is counted as well as logged, so a device can be
-    // asked about it long after the fact.
-    this->last_poll_ms_ = millis();
-    const uint8_t fifo = this->read_register_(REG_FIFO_STATUS);
-    const uint8_t status = this->read_register_(REG_STATUS);
-    // Re-checked after the two reads, which take tens of microseconds - long
-    // enough for a handler to run. A payload that arrived just before the poll
-    // has its interrupt on the way, and counting that as a missed one would
-    // report a fault where there is only ordinary latency.
-    if ((!(fifo & FIFO_RX_EMPTY) || (status & STATUS_RX_DR)) && !this->irq_flag_) {
-      if (this->irq_missed_count_ < 0xFFFF) {
-        this->irq_missed_count_++;
-      }
-      ESP_LOGW(TAG,
-               "No interrupt for a waiting payload: FIFO_STATUS=%02X STATUS=%02X IRQ pin=%u "
-               "- draining by poll (n=%u)",
-               fifo, status, static_cast<unsigned>(this->irq_pin_->digital_read()),
-               static_cast<unsigned>(this->irq_missed_count_));
-      this->drain_fifo_();
-      // RX_DR set with an empty FIFO - measured as FIFO_STATUS=11 STATUS=4E,
-      // the pipe field reading its empty marker. Mostly that is the chip
-      // raising the flag a moment before it stores the payload, and the next
-      // arrival settles it. But draining finds nothing to clear it with, so if
-      // it ever did stand it would hold the line down for good. Clearing it
-      // costs one write and takes that ending away.
-      if (this->read_register_(REG_FIFO_STATUS) & FIFO_RX_EMPTY) {
-        this->write_register_(REG_STATUS, STATUS_RX_DR);
-      }
-    }
-  }
+  // The FIFO is read on every loop, whether or not an interrupt arrived. The
+  // interrupt decides how *soon* this runs, never *whether* it runs - and that
+  // separation is the point.
+  //
+  // It used to be the other way round: with an IRQ pin configured, nothing
+  // looked at the FIFO unless the handler had fired. The nRF24's IRQ line is
+  // level-active-low and stays down while RX_DR is set, while the pin is
+  // watched for falling edges, so anything that left RX_DR standing took the
+  // edge away for good and the receiver fell silent for good with it - the chip
+  // still receiving, every register still reading back as configured. One
+  // register read per loop is what that failure mode costs to remove.
+  const bool after_interrupt = this->irq_flag_;
+  // Cleared before draining: a frame arriving mid-drain re-arms it.
+  this->irq_flag_ = false;
+  this->drain_fifo_(after_interrupt);
+
 
 #if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
   // Diagnostic: sample the carrier detector so RF-level problems can be
