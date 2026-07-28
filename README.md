@@ -68,8 +68,46 @@ logger:
   baud_rate: 0    # keeps network logging, drops the blocking serial writes
 ```
 
-`dump_config` reports the FIFO-full count, which is the number to watch: it says
-how often frames were at risk of being dropped.
+`dump_config` reports the FIFO-full count, but do not read too much into it: it
+only reflects the FIFO at the moment the driver happens to look, so a receiver
+running right at its limit drops frames while rarely being *seen* full.
+
+### How much this receiver can take
+
+Measured with `tests/throughput.yaml` — the driver alone, no BTHome layer, no
+per-frame logging — by sending bursts of frames back to back, which is line rate
+for as long as the burst lasts. At 2 Mbps that is one frame every 165 µs, and
+the chip's RX FIFO holds three:
+
+| frames back to back | received |
+| --- | --- |
+| 2 | 99.4% |
+| 4 | 99.4% |
+| 8 | 85.7% |
+| 16 | 73.2% |
+
+The same 1346 frames sent slowly, one HTTP round trip apart, arrive at 99.6%, so
+what the bursts run into is the receiver and not the radio link.
+
+Two to four frames fit in the FIFO and cost nothing. Past that the numbers work
+out to roughly **3000 frames a second, about 100 kB/s of payload** — which lands
+between 1 Mbps and 2 Mbps of air rate. So:
+
+- **250 kbps** (760 frames/s) — comfortable, no loss.
+- **1 Mbps** (3000 frames/s) — right at the limit; measured 93% under sustained
+  bursts.
+- **2 Mbps** (6100 frames/s) — twice what the receiver can drain.
+
+That budget is about 300 µs per frame, which is where five SPI transactions at
+4 MHz and one pass of the ESPHome loop go. Raising the SPI clock or reading the
+payload straight from the interrupt would move it; neither is done here, because
+the traffic this component was built for is a few frames per minute.
+
+For anything approaching a stream, use `auto_ack: true` (which needs
+`payload_size: dynamic`). The receiving chip acknowledges only what actually
+reached its FIFO, so a full FIFO stops losing frames and starts making the
+sender repeat them - link-level flow control, and the reason no-ack broadcast is
+right for sensors and wrong for a file.
 
 ## Configuration
 
