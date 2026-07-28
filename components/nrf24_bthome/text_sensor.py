@@ -27,7 +27,7 @@ def _text_schema():
             # Which occurrence of the object in a frame this entity takes, as
             # for the measurements. `device_name` below is instance 1 of the
             # text object under the name senders use it for.
-            cv.Optional(CONF_INDEX, default=1): cv.int_range(min=1, max=8),
+            cv.Optional(CONF_INDEX, default=1): cv.int_range(min=1, max=12),
         }
     )
 

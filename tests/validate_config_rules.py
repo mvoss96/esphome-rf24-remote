@@ -326,7 +326,7 @@ check("R25 index 0 is refused - instances are counted from one",
 check("R26 an index past the last countable instance is refused",
       PROBE_DEVICE + """    temperature:
       name: X
-      index: 9
+      index: 13
 """, ANY)
 
 # Every type at once, generated from the same table the benches use. It fails on

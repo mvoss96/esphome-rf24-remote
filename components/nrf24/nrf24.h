@@ -4,25 +4,17 @@
 #include "esphome/core/hal.h"
 #include "esphome/components/spi/spi.h"
 
+#include "nrf24_config.h"
+
 #include <array>
 #include <vector>
 
 namespace esphome {
 namespace nrf24 {
 
-enum DataRate : uint8_t {
-  NRF24_RATE_250KBPS,
-  NRF24_RATE_1MBPS,
-  NRF24_RATE_2MBPS,
-};
-
-// Values match the RF_SETUP RF_PWR field (bits 2:1).
-enum PALevel : uint8_t {
-  NRF24_PA_MIN = 0,   // -18 dBm
-  NRF24_PA_LOW = 1,   // -12 dBm
-  NRF24_PA_HIGH = 2,  //  -6 dBm
-  NRF24_PA_MAX = 3,   //   0 dBm
-};
+// DataRate, PALevel, PipeSetup, PipeMasks, MAX_PIPES and the two functions over
+// them live in nrf24_config.h - the arithmetic half of the configuration, kept
+// free of esphome includes so it can be checked on the host.
 
 // Implemented by consumers (e.g. nrf24_bthome). Called from loop() context,
 // never from an ISR, once per received frame.

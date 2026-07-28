@@ -116,6 +116,13 @@ class NRF24BTHomeDevice {
   // Publishes configuration-known values (sender ID); called once by the hub.
   void publish_static_info();
 
+  // What this device is set up to receive. Worth printing because both halves
+  // are misconfigurations that look like a dead radio from the outside: a
+  // timeout shorter than the sender's status interval reports it offline
+  // between broadcasts, and a platform entry that never attached shows up here
+  // as a device with no entities at all.
+  void dump_config() const;
+
   // Called periodically by the hub: after the quiet period it ages out the
   // packet-id dedup state and flips the connectivity sensor to offline.
   void check_timeout(uint32_t now_ms);
@@ -163,6 +170,7 @@ class NRF24BTHomeDevice {
   std::array<uint8_t, 4> sender_id_{{0, 0, 0, 0}};
   char sender_id_text_[12]{"00:00:00:00"};
   int16_t last_packet_id_{-1};  // -1 = nothing received yet
+  bool warned_no_packet_id_{false};
   uint32_t timeout_ms_{0};
   uint32_t last_contact_ms_{0};  // millis() of the last valid frame (repeats count)
   bool ever_seen_{false};

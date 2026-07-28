@@ -301,6 +301,21 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
     return false;
   }
 
+  // BTHome makes the packet id optional, and for measurements its absence costs
+  // nothing - the same reading is published a few times over. For an event it
+  // is the difference between one press and three, because there is then
+  // nothing by which a repeat can be told from a new press. Measured on the
+  // bench: three copies of one frame, three button events. Said once per
+  // device; the sender will not start including one halfway through.
+  if (pending.packet_id < 0 && (pending.button_count > 0 || pending.dimmer_count > 0) &&
+      !this->warned_no_packet_id_) {
+    this->warned_no_packet_id_ = true;
+    ESP_LOGW(TAG,
+             "%s: event objects without a packet id - repeats cannot be told from new "
+             "events, so every copy the sender broadcasts fires again",
+             this->sender_id_text_);
+  }
+
   // The sender repeats every frame a few times (NO_ACK broadcast); an unchanged
   // packet id identifies those repeats. Checked here rather than where the
   // object appeared, so the order of the objects cannot decide the outcome.
@@ -448,10 +463,40 @@ void NRF24BTHomeDevice::check_timeout(uint32_t now_ms) {
 #endif
 }
 
+void NRF24BTHomeDevice::dump_config() const {
+  ESP_LOGCONFIG(TAG, "  Device: %s", this->sender_id_text_);
+  if (this->timeout_ms_ == 0) {
+    ESP_LOGCONFIG(TAG, "    Timeout: none (offline detection disabled)");
+  } else {
+    ESP_LOGCONFIG(TAG, "    Timeout: %u ms", static_cast<unsigned>(this->timeout_ms_));
+  }
+
+  unsigned sensors = 0, binaries = 0, texts = 0;
+#ifdef USE_SENSOR
+  sensors = static_cast<unsigned>(this->object_sensors_.size()) +
+            (this->last_seen_sensor_ != nullptr ? 1u : 0u);
+#endif
+#ifdef USE_BINARY_SENSOR
+  binaries = static_cast<unsigned>(this->object_binary_sensors_.size()) +
+             (this->connected_sensor_ != nullptr ? 1u : 0u);
+#endif
+#ifdef USE_TEXT_SENSOR
+  texts = static_cast<unsigned>(this->object_text_sensors_.size()) +
+          (this->name_text_sensor_ != nullptr ? 1u : 0u) +
+          (this->firmware_text_sensor_ != nullptr ? 1u : 0u) +
+          (this->sender_id_text_sensor_ != nullptr ? 1u : 0u);
+#endif
+  ESP_LOGCONFIG(TAG, "    Entities: %u sensor, %u binary sensor, %u text sensor", sensors,
+                binaries, texts);
+  ESP_LOGCONFIG(TAG, "    Triggers: %u on_button, %u on_dimmer",
+                static_cast<unsigned>(this->button_triggers_.size()),
+                static_cast<unsigned>(this->dimmer_triggers_.size()));
+}
+
 void NRF24BTHomeHub::dump_config() {
   ESP_LOGCONFIG(TAG, "nRF24 BTHome receiver:");
   for (auto *dev : this->devices_) {
-    ESP_LOGCONFIG(TAG, "  Device: %s", dev->sender_id_text());
+    dev->dump_config();
   }
 }
 

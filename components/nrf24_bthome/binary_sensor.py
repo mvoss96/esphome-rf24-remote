@@ -104,7 +104,7 @@ def _binary_schema(key):
         {
             # The k-th object of a type addresses instance k, as for the
             # measurements: a node with two door contacts gets one entity each.
-            cv.Optional(CONF_INDEX, default=1): cv.int_range(min=1, max=8),
+            cv.Optional(CONF_INDEX, default=1): cv.int_range(min=1, max=12),
         }
     )
 

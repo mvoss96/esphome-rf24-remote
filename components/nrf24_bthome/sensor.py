@@ -206,7 +206,7 @@ def _sensor_schema(key):
             # buttons and dimmers, so a node with two probes of one kind can have
             # an entity for each instead of the second overwriting the first. A
             # second instance needs its own platform entry.
-            cv.Optional(CONF_INDEX, default=1): cv.int_range(min=1, max=8),
+            cv.Optional(CONF_INDEX, default=1): cv.int_range(min=1, max=12),
         }
     )
 

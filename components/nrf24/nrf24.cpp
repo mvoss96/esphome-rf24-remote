@@ -80,20 +80,17 @@ void NRF24Hub::radio_init_() {
   // One enable bit per configured pipe: first entry is pipe 1, further
   // entries are pipes 2-5. Auto-ack and dynamic payloads get their own masks,
   // because both are per-pipe and a radio may serve one converted and one
-  // unconverted sender at the same time.
-  uint8_t pipe_mask = 0;
-  uint8_t auto_ack_mask = 0;
-  uint8_t dynamic_mask = 0;
-  for (size_t i = 0; i < this->pipes_.size() && i < 5; i++) {
-    const uint8_t bit = 1 << (i + 1);
-    pipe_mask |= bit;
-    if (this->pipes_[i].auto_ack) {
-      auto_ack_mask |= bit;
-    }
-    if (this->pipes_[i].payload_size == 0) {
-      dynamic_mask |= bit;
-    }
+  // unconverted sender at the same time. Computed in nrf24_config.h, which is
+  // where it can be checked without a chip.
+  PipeSetup setups[MAX_PIPES];
+  size_t setup_count = 0;
+  for (size_t i = 0; i < this->pipes_.size() && i < MAX_PIPES; i++) {
+    setups[setup_count++] = PipeSetup{this->pipes_[i].payload_size, this->pipes_[i].auto_ack};
   }
+  const PipeMasks masks = pipe_masks(setups, setup_count);
+  const uint8_t pipe_mask = masks.enabled;
+  const uint8_t auto_ack_mask = masks.auto_ack;
+  const uint8_t dynamic_mask = masks.dynamic;
 
   this->write_register_(REG_CONFIG, CONFIG_STANDBY);
   // Auto acknowledgement, per pipe. Configurable, but not freely: with dynamic
@@ -114,14 +111,7 @@ void NRF24Hub::radio_init_() {
   this->write_register_(REG_SETUP_RETR, 0x00);  // no auto-retransmit (RX only)
   this->write_register_(REG_RF_CH, this->channel_);
 
-  // RF_SETUP: data rate bits (RF_DR_LOW=bit5, RF_DR_HIGH=bit3) + PA (bits 2:1).
-  uint8_t rf_setup = static_cast<uint8_t>(this->pa_level_) << 1;
-  if (this->data_rate_ == NRF24_RATE_250KBPS) {
-    rf_setup |= 0x20;
-  } else if (this->data_rate_ == NRF24_RATE_2MBPS) {
-    rf_setup |= 0x08;
-  }
-  this->write_register_(REG_RF_SETUP, rf_setup);
+  this->write_register_(REG_RF_SETUP, rf_setup_byte(this->data_rate_, this->pa_level_));
 
   if (!this->pipes_.empty()) {
     // Pipe 1 carries the full 5-byte address; pipes 2-5 only their first
@@ -136,7 +126,7 @@ void NRF24Hub::radio_init_() {
   // feature is enabled as soon as any pipe wants it, and the pipes that do not
   // are simply left out of DYNPD. Some clones need the ACTIVATE handshake before
   // FEATURE becomes writable, so verify and retry once.
-  const uint8_t feature = dynamic_mask != 0 ? 0x04 : 0x00;  // EN_DPL
+  const uint8_t feature = masks.feature;  // EN_DPL when any pipe is dynamic
   this->write_register_(REG_FEATURE, feature);
   if (feature != 0 && this->read_register_(REG_FEATURE) != feature) {
     this->enable();

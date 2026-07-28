@@ -30,11 +30,15 @@ jobs:
       - run: pip install esphome
       - name: Config rules
         run: python tests/validate_config_rules.py
+      # The three that build C++ take the library at the version
+      # components/nrf24_bthome/__init__.py pins - checking against a different
+      # one would prove nothing about the firmware.
+      - name: Radio register logic
+        run: python tests/test_nrf24_config.py
       - name: Sensor types against the pinned bthome-cpp
-        # Clones the library at the version components/nrf24_bthome/__init__.py
-        # pins - checking against a different one would prove nothing about the
-        # firmware.
         run: python tests/test_sensor_types.py
+      - name: Device logic
+        run: python tests/test_device_logic.py
 
   compile:
     name: compile for esp32-c3
