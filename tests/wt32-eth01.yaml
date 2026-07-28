@@ -490,7 +490,8 @@ text_sensor:
     sender_id:
       name: "Remote 1 Sender ID"
   # The two variable-length objects, plus a second text instance. Same naming
-  # rule as the other probe entities.
+  # rule as the other probe entities. device_name is the first text object under
+  # the name senders use 0x53 for, so it is fed by the same frames as `text`.
   - platform: nrf24_bthome
     nrf24_bthome_device_id: type_probe
     text:
@@ -498,6 +499,12 @@ text_sensor:
       internal: true
     raw:
       name: "P raw"
+      internal: true
+    device_name:
+      name: "P device_name"
+      internal: true
+    firmware_version:
+      name: "P firmware_version"
       internal: true
   - platform: nrf24_bthome
     nrf24_bthome_device_id: type_probe
