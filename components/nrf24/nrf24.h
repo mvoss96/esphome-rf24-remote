@@ -83,6 +83,10 @@ class NRF24Hub : public Component,
   uint32_t rx_short_frames() const { return this->rx_short_frames_; }
   uint16_t bad_length_count() const { return this->bad_length_count_; }
   uint16_t watchdog_count() const { return this->watchdog_count_; }
+  // Payloads that were sitting in the FIFO although no interrupt had arrived.
+  // Anything but zero means the IRQ path is not carrying, and the receiver is
+  // running on the poll below it.
+  uint16_t irq_missed_count() const { return this->irq_missed_count_; }
 
  protected:
   static void IRAM_ATTR s_irq_isr(NRF24Hub *self) { self->irq_flag_ = true; }
@@ -119,6 +123,8 @@ class NRF24Hub : public Component,
   uint32_t rx_short_frames_{0};        // ... of which shorter than a full slot
   uint16_t bad_length_count_{0};       // payload widths the chip reported as 0 or >32
   uint16_t watchdog_count_{0};         // radio re-inits forced by the watchdog
+  uint32_t last_poll_ms_{0};           // throttle for the safety-net FIFO poll
+  uint16_t irq_missed_count_{0};       // payloads found by that poll, not by the IRQ
   bool chip_ok_{false};
   bool regs_ok_{false};
   bool clone_suspected_{false};

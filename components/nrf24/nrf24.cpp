@@ -302,6 +302,11 @@ void NRF24Hub::drain_fifo_() {
       ESP_LOGW(TAG, "Chip reported a payload width of %u, flushing RX FIFO (n=%u)",
                static_cast<unsigned>(len), static_cast<unsigned>(this->bad_length_count_));
       this->command_(CMD_FLUSH_RX);
+      // RX_DR has to go with the flush. It is what holds the level-active-low
+      // IRQ line down, and leaving it set on the way out of here would mean no
+      // further falling edge ever - the receiver would go quiet for good on one
+      // bad length reading.
+      this->write_register_(REG_STATUS, STATUS_RX_DR);
       break;
     }
     if (this->rx_frames_ < 0xFFFFFFFF) {
@@ -349,6 +354,46 @@ void NRF24Hub::loop() {
     // Clear before draining: a frame arriving mid-drain re-arms the flag.
     this->irq_flag_ = false;
     this->drain_fifo_();
+  } else if (millis() - this->last_poll_ms_ > 250) {
+    // The interrupt alone cannot be trusted to keep arriving, so the FIFO is
+    // also looked at on a timer. Not a workaround - the correct pairing for a
+    // level-active source watched by an edge detector.
+    //
+    // The chip pulls IRQ low for as long as RX_DR is set and lets it go when
+    // RX_DR is cleared. Under sustained traffic the next payload sets RX_DR
+    // again before the line has returned high, so the line simply never rises,
+    // no further falling edge is ever produced, and the handler stops being
+    // called. Nothing about the radio is wrong at that point: it keeps
+    // receiving, and every register reads back exactly as configured. The
+    // receiver just stops looking, for good.
+    //
+    // Measured on the lab hub under load on the dynamic pipe:
+    //
+    //   No interrupt for a waiting payload: FIFO_STATUS=12 STATUS=42 IRQ pin=0
+    //
+    // - the RX FIFO full, RX_DR set, the line still down. Twice before that the
+    // same receiver had gone silent for good, and a watchdog re-init had not
+    // brought it back, which fits: re-initializing the radio cannot restore an
+    // interrupt that is no longer being delivered.
+    //
+    // Four times a second costs two SPI reads each and bounds the outage at a
+    // quarter second, which is inside the window a sender's repeats span.
+    // Finding a payload here is counted as well as logged, so a device can be
+    // asked about it long after the fact.
+    this->last_poll_ms_ = millis();
+    const uint8_t fifo = this->read_register_(REG_FIFO_STATUS);
+    const uint8_t status = this->read_register_(REG_STATUS);
+    if (!(fifo & FIFO_RX_EMPTY) || (status & STATUS_RX_DR)) {
+      if (this->irq_missed_count_ < 0xFFFF) {
+        this->irq_missed_count_++;
+      }
+      ESP_LOGW(TAG,
+               "No interrupt for a waiting payload: FIFO_STATUS=%02X STATUS=%02X IRQ pin=%u "
+               "- draining by poll (n=%u)",
+               fifo, status, static_cast<unsigned>(this->irq_pin_->digital_read()),
+               static_cast<unsigned>(this->irq_missed_count_));
+      this->drain_fifo_();
+    }
   }
 
 #if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
@@ -415,12 +460,13 @@ void NRF24Hub::dump_config() {
   // Printed on every dump_config, so `esphome logs` after a silent spell answers
   // "did it hear anything?" without anyone having to reproduce the fault first.
   ESP_LOGCONFIG(TAG, "  Frames: %u (%u shorter than a slot), bad length: %u, "
-                     "FIFO full: %u, watchdog: %u",
+                     "FIFO full: %u, watchdog: %u, missed interrupts: %u",
                 static_cast<unsigned>(this->rx_frames_),
                 static_cast<unsigned>(this->rx_short_frames_),
                 static_cast<unsigned>(this->bad_length_count_),
                 static_cast<unsigned>(this->fifo_full_count_),
-                static_cast<unsigned>(this->watchdog_count_));
+                static_cast<unsigned>(this->watchdog_count_),
+                static_cast<unsigned>(this->irq_missed_count_));
   if (this->chip_ok_) {
     // Reported, not warned about. The probe is sound - it was checked against a
     // module known to carry an Si24R1 and called it correctly, while RF24's own
