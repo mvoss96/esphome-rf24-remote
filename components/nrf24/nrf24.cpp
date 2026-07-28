@@ -274,7 +274,7 @@ void NRF24Hub::drain_fifo_() {
   for (uint8_t guard = 0; guard < 8; guard++) {
     const uint8_t fifo = this->read_register_(REG_FIFO_STATUS);
     if (fifo & FIFO_RX_EMPTY) {
-      break;
+      return;  // nothing queued: the interrupt will bring us back
     }
     // A full FIFO means frames arriving right now are being dropped by the
     // chip, and it has no lost-frame counter to ask afterwards - so this is the
@@ -307,7 +307,7 @@ void NRF24Hub::drain_fifo_() {
       // further falling edge ever - the receiver would go quiet for good on one
       // bad length reading.
       this->write_register_(REG_STATUS, STATUS_RX_DR);
-      break;
+      return;
     }
     if (this->rx_frames_ < 0xFFFFFFFF) {
       this->rx_frames_++;
@@ -345,6 +345,18 @@ void NRF24Hub::drain_fifo_() {
       listener->on_nrf24_frame(pipe, frame, len, fixed != 0);
     }
   }
+
+  // The guard ran out with payloads still queued. Yielding here is the point -
+  // a flooded channel must not starve the rest of the loop - but yielding is
+  // not the same as giving up, and this used to do the latter. The interrupt
+  // cannot bring us back: its line is already low and stays low while RX_DR is
+  // set, so no further falling edge is ever produced. Measured as a receiver
+  // that fell silent for good, with the RX FIFO full and every register reading
+  // back exactly as configured.
+  //
+  // So the work is handed to the next loop() explicitly. The flag is what the
+  // interrupt would have set.
+  this->irq_flag_ = true;
 }
 
 void NRF24Hub::loop() {
@@ -383,7 +395,11 @@ void NRF24Hub::loop() {
     this->last_poll_ms_ = millis();
     const uint8_t fifo = this->read_register_(REG_FIFO_STATUS);
     const uint8_t status = this->read_register_(REG_STATUS);
-    if (!(fifo & FIFO_RX_EMPTY) || (status & STATUS_RX_DR)) {
+    // Re-checked after the two reads, which take tens of microseconds - long
+    // enough for a handler to run. A payload that arrived just before the poll
+    // has its interrupt on the way, and counting that as a missed one would
+    // report a fault where there is only ordinary latency.
+    if ((!(fifo & FIFO_RX_EMPTY) || (status & STATUS_RX_DR)) && !this->irq_flag_) {
       if (this->irq_missed_count_ < 0xFFFF) {
         this->irq_missed_count_++;
       }
@@ -393,6 +409,15 @@ void NRF24Hub::loop() {
                fifo, status, static_cast<unsigned>(this->irq_pin_->digital_read()),
                static_cast<unsigned>(this->irq_missed_count_));
       this->drain_fifo_();
+      // RX_DR set with an empty FIFO - measured as FIFO_STATUS=11 STATUS=4E,
+      // the pipe field reading its empty marker. Mostly that is the chip
+      // raising the flag a moment before it stores the payload, and the next
+      // arrival settles it. But draining finds nothing to clear it with, so if
+      // it ever did stand it would hold the line down for good. Clearing it
+      // costs one write and takes that ending away.
+      if (this->read_register_(REG_FIFO_STATUS) & FIFO_RX_EMPTY) {
+        this->write_register_(REG_STATUS, STATUS_RX_DR);
+      }
     }
   }
 
