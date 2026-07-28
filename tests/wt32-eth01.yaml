@@ -36,6 +36,12 @@ ethernet:
 # and the radio's frame-level logging is the point of this build.
 logger:
   level: VERBOSE
+  # No serial port: this board is only ever reached over Ethernet, and at 115200
+  # baud a VERBOSE line per frame is milliseconds of blocking write inside the
+  # loop - far more than the 1.3 ms a 32-byte frame takes on the air at 250 kbps.
+  # Measured: with the UART on, fast traffic loses frames the radio had already
+  # received and the receiver had nowhere to put.
+  baud_rate: 0
 
 api:
 

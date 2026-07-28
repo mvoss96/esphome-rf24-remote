@@ -46,6 +46,31 @@ copy the sender broadcasts fires again. Measurements are unaffected — the same
 reading is simply published a few times — and the receiver warns once per device
 when it sees events arrive that way.
 
+### Logging is the throughput limit, not the radio
+
+At 250 kbps a 32-byte frame takes about 1.3 ms on the air, and the chip's RX
+FIFO holds three. A `VERBOSE` line per frame written to a serial port at 115200
+baud takes longer than that, and the write blocks inside the loop — so the radio
+receives frames the receiver then has nowhere to put.
+
+Measured on the lab hub, same 1280 frames from two senders at once:
+
+| | frames received | RX FIFO full |
+| --- | --- | --- |
+| `VERBOSE` with the serial port on | 631 | 143× |
+| `VERBOSE`, `baud_rate: 0` | 1313 | 0 |
+
+So on a device reached over the network, turn the serial logger off:
+
+```yaml
+logger:
+  level: VERBOSE
+  baud_rate: 0    # keeps network logging, drops the blocking serial writes
+```
+
+`dump_config` reports the FIFO-full count, which is the number to watch: it says
+how often frames were at risk of being dropped.
+
 ## Configuration
 
 ```yaml
