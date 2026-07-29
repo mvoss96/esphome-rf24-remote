@@ -13,10 +13,6 @@ Two ESPHome external components:
   RotRemote_BTHome sender firmware; the legacy protocols this ecosystem
   replaces are documented in [PROTOCOL.md](PROTOCOL.md).
 
-> **Breaking change in v0.2.0:** the radio configuration moved from the
-> `nrf24_bthome` block into the new `nrf24` component (see below). v0.1.0
-> configs keep working when pinned to `@v0.1.0`.
-
 ## How it works
 
 All senders broadcast to one shared 5-byte address (`BTHME` by default),
