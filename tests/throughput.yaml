@@ -16,6 +16,13 @@
 #   esphome logs tests/throughput.yaml --device 192.168.2.70
 substitutions:
   air_rate: "250kbps"   # 250kbps | 1Mbps | 2Mbps
+  # The two pipe modes a transfer can use. Broadcast is what a sensor does: no
+  # acknowledgement, a lost frame is simply gone. Acknowledged is what a file
+  # needs, and on this chip it is only available with dynamic payload lengths.
+  #   broadcast    pipe_size: "32"        pipe_ack: "false"
+  #   acknowledged pipe_size: "dynamic"   pipe_ack: "true"
+  pipe_size: "32"
+  pipe_ack: "false"
 
 esphome:
   name: nrf24-esp32hub
@@ -73,5 +80,5 @@ nrf24:
   # payload is - the one question these modules answer unreliably.
   pipes:
     - address: "CTHME"
-      payload_size: 32
-      auto_ack: false
+      payload_size: ${pipe_size}
+      auto_ack: ${pipe_ack}

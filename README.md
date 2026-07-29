@@ -75,207 +75,50 @@ running right at its limit drops frames while rarely being *seen* full.
 ### How much this receiver can take
 
 Measured with `tests/throughput.yaml` — the driver alone, no BTHome layer, no
-per-frame logging — by sending bursts of frames back to back, which is line rate
-for as long as the burst lasts. At 2 Mbps that is one frame every 165 µs, and
-the chip's RX FIFO holds three:
+per-frame logging — against a sender clocking frames out back to back from
+flash, so the air really is saturated and nothing on the sending side is the
+limit:
 
-| frames back to back | received |
-| --- | --- |
-| 2 | 99.4% |
-| 4 | 99.4% |
-| 8 | 85.7% |
-| 16 | 73.2% |
+| air rate | frames offered | received | taken |
+| --- | --- | --- | --- |
+| 250 kbps | 777/s | 99.4% | 771/s |
+| 1 Mbps | 3100/s | 45.6% | 1414/s |
+| 2 Mbps | 6200/s | 22.8% | 1410/s |
 
-The same 1346 frames sent slowly, one HTTP round trip apart, arrive at 99.6%, so
-what the bursts run into is the receiver and not the radio link.
+The number that matters is the last column, and it barely moves with the air
+rate: **about 1400 frames a second, roughly 44 kB/s of payload**. That is the
+receiver's own cost per frame — some 700 µs, of which five SPI transactions at
+4 MHz are the smaller part and one pass of the ESPHome loop the larger.
 
-Two to four frames fit in the FIFO and cost nothing. Past that the numbers work
-out to roughly **3000 frames a second, about 100 kB/s of payload** — which lands
-between 1 Mbps and 2 Mbps of air rate. So:
+So 250 kbps fits with room to spare even when a sender saturates it, which is
+why the traffic this component was built for never comes close. 1 Mbps overruns
+it twofold and 2 Mbps fourfold.
 
-- **250 kbps** (760 frames/s) — comfortable, no loss.
-- **1 Mbps** (3000 frames/s) — right at the limit; measured 93% under sustained
-  bursts.
-- **2 Mbps** (6100 frames/s) — twice what the receiver can drain.
+Do not read the FIFO-full counter as a loss figure: it reflects the FIFO only at
+the moment the driver looks, and at 2 Mbps it stood at 3 while three quarters of
+the frames were being dropped.
 
-That budget is about 300 µs per frame, which is where five SPI transactions at
-4 MHz and one pass of the ESPHome loop go. Raising the SPI clock or reading the
-payload straight from the interrupt would move it; neither is done here, because
-the traffic this component was built for is a few frames per minute.
+### Sending a file
 
-For anything approaching a stream, use `auto_ack: true` (which needs
-`payload_size: dynamic`). The receiving chip acknowledges only what actually
-reached its FIFO, so a full FIFO stops losing frames and starts making the
-sender repeat them - link-level flow control, and the reason no-ack broadcast is
-right for sensors and wrong for a file.
+Broadcast is right for sensors and wrong for a file. Measured by sending a
+43 kB JPEG (1346 frames of 32 bytes) at the receiver:
 
-## Configuration
+| | time | throughput | arrived |
+| --- | --- | --- | --- |
+| 2 Mbps, no ack | 1.16 s | 36.1 kB/s | 99.3% |
+| 2 Mbps, `auto_ack` | 1.42 s | 29.6 kB/s | **100%** |
+| 250 kbps, `auto_ack` | 6.62 s | 6.3 kB/s | **100%** |
 
-```yaml
-external_components:
-  - source: github://mvoss96/esphome-rf24-remote@v0.2.0
-    components: [nrf24, nrf24_bthome]
+99.3% is not 99.3% of a picture. A JPEG is an entropy-coded stream: it is
+readable up to the first missing chunk and noise afterwards, so the ten frames
+that went missing cost the image.
 
-spi:
-  clk_pin: GPIO4
-  miso_pin: GPIO5
-  mosi_pin: GPIO6
-
-nrf24:
-  cs_pin: GPIO8
-  ce_pin: GPIO7
-  # irq_pin: GPIO9        # optional; falls back to FIFO polling without it
-  channel: 100            # 0-125, default 100
-  air_data_rate: 250kbps  # 250kbps (default) / 1Mbps / 2Mbps
-  pa_level: 0dBm          # -18dBm / -12dBm / -6dBm / 0dBm (default)
-  watchdog_timeout: 5min  # 0s disables; keep well above the senders' status interval
-  pipes:
-    - address: "BTHME"    # 5 chars or "42:54:48:4D:45"
-
-nrf24_bthome:
-  devices:
-    - sender_id: "B7:4F:E7:7F"   # printed in the remote's boot log
-      on_button:
-        # args: button (uint8_t, 1-based), event (std::string:
-        # press, double_press, triple_press, long_press, ...)
-        - logger.log:
-            format: "button %u: %s"
-            args: [button, event.c_str()]
-      on_dimmer:
-        # args: dimmer (uint8_t, 1-based instance), steps (int,
-        # negative = rotate left, positive = rotate right)
-        - light.dim_relative:
-            id: my_light
-            relative_brightness: !lambda return steps * 0.03;
-```
-
-Frames from sender IDs without a `devices` entry are logged at DEBUG and
-ignored — pairing a remote to a lamp is purely a YAML decision.
-
-Additional pipes (2-5) share all but their **first** address byte (the
-on-air LSB) with pipe 1 — an nRF24 hardware constraint, enforced at config
-time:
-
-```yaml
-nrf24:
-  # ...
-  pipes:
-    - address: "BTHME"
-    - address: "XTHME"   # differs only in the first byte
-```
-
-## Entities
-
-Every BTHome object is declared by name, one key per quantity:
-
-```yaml
-sensor:
-  - platform: nrf24_bthome
-    nrf24_bthome_device_id: remote1
-    battery:
-      name: "Remote Battery"
-    temperature:
-      name: "Remote Temperature"
-
-binary_sensor:
-  - platform: nrf24_bthome
-    nrf24_bthome_device_id: remote1
-    motion:
-      name: "Remote Motion"
-
-text_sensor:
-  - platform: nrf24_bthome
-    nrf24_bthome_device_id: remote1
-    device_name:
-      name: "Remote Name"
-    firmware_version:
-      name: "Remote Firmware"
-```
-
-Named keys rather than a bare object id, because BTHome carries a value's width,
-sign and scale but not its unit or meaning. A generic mapping would make every
-user supply unit, device class and accuracy by hand, and a wrong guess produces
-an entity that looks correct in Home Assistant and is not.
-
-**Measurements** (`sensor`), 49 keys over all 58 measurement object ids:
-
-`battery`, `temperature`, `humidity`, `pressure`, `illuminance`, `mass`,
-`mass_lb`, `dewpoint`, `count`, `energy`, `power`, `voltage`, `pm2_5`, `pm10`,
-`co2`, `tvoc`, `moisture`, `humidity_u8`, `moisture_u8`, `rotation`,
-`distance_mm`, `distance_m`, `duration`, `current`, `speed`, `temperature_c1`,
-`uv_index`, `volume`, `volume_ml`, `volume_flow_rate`, `voltage_centi`, `gas`,
-`volume_u32`, `water`, `timestamp`, `acceleration`, `gyroscope`,
-`volume_storage`, `conductivity`, `temperature_s8`, `temperature_s8_035`,
-`direction`, `precipitation`, `channel`, `rotational_speed`, `speed_s32`,
-`acceleration_s32`, `light_level`, `settings_revision`
-
-**Binary objects** (`binary_sensor`), all 28:
-
-`generic`, `power`, `opening`, `battery_low`, `battery_charging`,
-`carbon_monoxide`, `cold`, `connectivity`, `door`, `garage_door`, `gas`, `heat`,
-`light`, `lock`, `moisture`, `motion`, `moving`, `occupancy`, `plug`,
-`presence`, `problem`, `running`, `safety`, `smoke`, `sound`, `tamper`,
-`vibration`, `window`
-
-**Text and raw** (`text_sensor`): `text` (0x53) and `raw` (0x54). Raw is
-published as uppercase hex without separators — the bytes are not characters, a
-zero among them would end a string early, and most values above 0x7F are not
-printable.
-
-### Which ids share a key
-
-BTHome states the same quantity several ways. Ids that differ **in width or sign
-alone** share one key, because a sender picks one of them and they are the same
-measurement at the same resolution:
-
-| Key | Object ids |
-| --- | --- |
-| `count` | 0x09, 0x3D, 0x3E, 0x59, 0x5A, 0x5B |
-| `energy` | 0x0A, 0x4D |
-| `power` | 0x0B, 0x5C |
-| `current` | 0x43, 0x5D |
-| `gas` | 0x4B, 0x4C |
-
-Where the **resolution or the unit** differs the key stays separate, even for
-the same quantity, and carries the library's name for the id: `temperature_c1`
-(0x45), `temperature_s8` (0x57), `temperature_s8_035` (0x58), `humidity_u8`
-(0x2E), `moisture_u8` (0x2F), `voltage_centi` (0x4A), `volume_ml` (0x48),
-`volume_u32` (0x4E), `mass_lb` (0x07), `speed_s32` (0x62),
-`acceleration_s32` (0x63). One entity has one `accuracy_decimals`, and folding
-0x02 (hundredths of a degree) together with 0x57 (whole degrees) would make it
-claim a precision that depends on which id happened to arrive.
-
-### Instances
-
-`index:` selects which occurrence of an object in a frame an entity takes — the
-k-th object of a type addresses instance k, the convention buttons and dimmers
-already follow. A node with two probes of one kind gets an entity for each
-instead of the second overwriting the first. A second instance needs its own
-platform entry:
-
-```yaml
-sensor:
-  - platform: nrf24_bthome
-    nrf24_bthome_device_id: remote1
-    temperature:
-      name: "Probe 1"
-  - platform: nrf24_bthome
-    nrf24_bthome_device_id: remote1
-    temperature:
-      name: "Probe 2"
-      index: 2
-```
-
-### Observed rather than received
-
-Three entities come from the receiver's own view rather than from a frame:
-`last_seen` (timestamp, requires `time_id` on the `nrf24_bthome` hub),
-`connected` (binary sensor, requires `timeout` on the device) and `sender_id`
-(text sensor). `connected` is not the same as the BTHome object `connectivity`
-(0x19): a sender cannot report over the radio that its radio stopped working.
-
-Encrypted BTHome payloads are refused with a warning. They are not supported and
-not planned — the ATmega senders this ecosystem is built around cannot encrypt.
+`auto_ack: true` (which the chip only offers together with `payload_size:
+dynamic`) fixes that, and it is not politeness — the receiving chip
+acknowledges only what actually reached its FIFO, so a receiver that falls
+behind stops acknowledging and the sender repeats instead of the frame being
+lost. The 250 kbps run needed 1352 retransmissions for 1346 frames and still
+arrived complete, at a fifth of the speed.
 
 ## Writing your own listener
 
