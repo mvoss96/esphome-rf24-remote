@@ -48,7 +48,10 @@ void NRF24BTHomeHub::on_nrf24_frame(uint8_t /*pipe*/, const uint8_t *frame, uint
   // So the padding is not cut here at all. The decoder walks the objects, and
   // where it reports an unknown object id of 0xFF it has reached the padding
   // rather than corruption - handled at the end of handle_service_data().
-  (void) padded;
+  //
+  // An encrypted payload cannot be walked, though, so for that one case the
+  // flag has to travel down with the frame; decrypt_() explains what it does
+  // with it.
 
   ESP_LOGVV(TAG, "Frame from %02X:%02X:%02X:%02X, %u bytes", frame[0], frame[1], frame[2],
             frame[3], len);
@@ -66,7 +69,7 @@ void NRF24BTHomeHub::on_nrf24_frame(uint8_t /*pipe*/, const uint8_t *frame, uint
     return;
   }
 
-  device->handle_service_data(frame + 4, len - 4);
+  device->handle_service_data(frame + 4, len - 4, padded);
 }
 
 // ---- Device -------------------------------------------------------------------
@@ -82,6 +85,171 @@ void NRF24BTHomeDevice::set_sender_id(const std::vector<uint8_t> &id) {
 bool NRF24BTHomeDevice::matches(const uint8_t *id) const {
   return memcmp(this->sender_id_.data(), id, this->sender_id_.size()) == 0;
 }
+
+#ifdef USE_BTHOME_ENCRYPTION
+void NRF24BTHomeDevice::set_encryption_key(const std::vector<uint8_t> &key) {
+  uint8_t bytes[BTHome::Encryptor::kKeyBytes] = {};
+  for (size_t i = 0; i < sizeof(bytes) && i < key.size(); i++) {
+    bytes[i] = key[i];
+  }
+  this->decryptor_.setKey(bytes);
+  this->encrypted_ = true;
+}
+
+void NRF24BTHomeDevice::set_nonce_mac(const std::vector<uint8_t> &mac) {
+  uint8_t bytes[BTHome::Encryptor::kMacBytes] = {};
+  for (size_t i = 0; i < sizeof(bytes) && i < mac.size(); i++) {
+    bytes[i] = mac[i];
+  }
+  this->decryptor_.setMac(bytes);
+}
+
+// An encrypted payload is [uuid lo][uuid hi][device info][ciphertext][counter][MIC],
+// and unlike the plaintext one it cannot be walked: where the ciphertext ends is
+// where the counter begins, and both are indistinguishable from noise. That is a
+// problem exactly here, because the senders this transport is built for use a
+// fixed 32-byte slot and fill the tail with 0xFF - so the frame handed up is
+// longer than the data in it, and counter and MIC would be read out of padding.
+//
+// The padding does still say where the data ends, just not quite exactly: the
+// last byte that is not 0xFF is the last byte of the MIC, unless the MIC itself
+// happens to end in 0xFF. So the candidates are that length and a few past it,
+// and the MIC settles which one is right - it authenticates the whole payload
+// and will not verify against a wrong length. That is one candidate in 255 cases
+// out of 256, and a wrong one costs a decrypt the receiver would spend anyway.
+//
+// Trimming the padding first, the way a plaintext frame must never be trimmed,
+// is safe here for the same reason it is unsafe there: this walks back from the
+// end only to bound the search, and the MIC - not the trimming - decides.
+NRF24BTHomeDevice::DecryptResult NRF24BTHomeDevice::decrypt_(const uint8_t *data, size_t len,
+                                                             bool padded, uint8_t *out,
+                                                             size_t out_capacity) {
+  // [uuid lo][uuid hi][device info] plus counter and MIC: the shortest encrypted
+  // payload there can be, carrying no objects at all.
+  constexpr size_t MIN_LEN = 3 + BTHome::Encryptor::kOverheadBytes;
+  // How many trailing 0xFF the MIC is allowed to end in before the payload is
+  // given up on. Each step costs one decrypt attempt and the odds of needing it
+  // fall by 256 per byte, so a whole MIC of 0xFF is covered.
+  constexpr size_t MAX_TRAILING_FF = BTHome::Encryptor::kMicBytes;
+
+  DecryptResult result;
+  // Asked before the length, and for the reason the library asks it first too:
+  // a plaintext payload is typically shorter than counter and MIC together, so
+  // reporting it as a truncated frame would send one looking for a radio fault
+  // instead of for the sender that is not encrypting.
+  if (len < 3 || (data[2] & BTHome::DeviceInfo::kEncryptedBit) == 0) {
+    result.status = len < 3 ? BTHome::DecryptStatus::BadBuffer
+                            : BTHome::DecryptStatus::NotEncrypted;
+    return result;
+  }
+  if (len < MIN_LEN) {
+    result.status = BTHome::DecryptStatus::BadBuffer;
+    return result;
+  }
+
+  size_t first = len;
+  size_t last = len;
+  if (padded) {
+    size_t end = len;
+    while (end > 0 && data[end - 1] == 0xFF) {
+      end--;
+    }
+    first = end < MIN_LEN ? MIN_LEN : end;
+    last = first + MAX_TRAILING_FF;
+    if (last > len) {
+      last = len;
+    }
+  }
+
+  for (size_t cand = first; cand <= last; cand++) {
+    // In the clear, right before the MIC, so it can be read whether or not the
+    // payload authenticates - which is what tells a repeat from a sender that
+    // restarted its counter.
+    const uint8_t *counter_bytes = data + cand - BTHome::Encryptor::kOverheadBytes;
+    const uint32_t counter = static_cast<uint32_t>(counter_bytes[0]) |
+                             (static_cast<uint32_t>(counter_bytes[1]) << 8) |
+                             (static_cast<uint32_t>(counter_bytes[2]) << 16) |
+                             (static_cast<uint32_t>(counter_bytes[3]) << 24);
+    size_t plain_len = 0;
+    const auto status =
+        this->decryptor_.decryptServiceData(data, cand, out, out_capacity, plain_len);
+    if (status == BTHome::DecryptStatus::Ok) {
+      return DecryptResult{status, plain_len, counter};
+    }
+    if (cand == first) {
+      // The shortest candidate is the right one unless the MIC ends in 0xFF, so
+      // its verdict is the one worth reporting when none of them authenticates.
+      result = DecryptResult{status, 0, counter};
+    }
+    // Neither depends on where the payload ends, so trying further lengths
+    // would only repeat the same answer.
+    if (status == BTHome::DecryptStatus::NotEncrypted ||
+        status == BTHome::DecryptStatus::NoBackend) {
+      return result;
+    }
+  }
+  return result;
+}
+
+void NRF24BTHomeDevice::report_decrypt_failure_(const DecryptResult &result) {
+  // The ordinary case, and not a fault: the sender broadcasts every frame a few
+  // times and each copy carries the counter of the first. This is the encrypted
+  // transport's deduplication, and a tighter one than the packet id - the repeat
+  // never reaches the decoder, and cannot be forged without the bindkey.
+  if (result.status == BTHome::DecryptStatus::Replay &&
+      result.counter == this->decryptor_.lastCounter()) {
+    ESP_LOGV(TAG, "%s: repeat of counter %u", this->sender_id_text_,
+             static_cast<unsigned>(result.counter));
+    return;
+  }
+
+  if (this->warned_decrypt_ && this->warned_status_ == result.status) {
+    ESP_LOGV(TAG, "%s: payload rejected again (status %u)", this->sender_id_text_,
+             static_cast<unsigned>(result.status));
+    return;
+  }
+  this->warned_decrypt_ = true;
+  this->warned_status_ = result.status;
+
+  switch (result.status) {
+    case BTHome::DecryptStatus::Replay:
+      // Strictly lower, so not a repeat. The senders of this ecosystem persist
+      // their counter and resume above it, which is what makes this worth a
+      // warning rather than a shrug: it means one that did not.
+      ESP_LOGW(TAG,
+               "%s: counter went backwards (%u, last accepted %u), discarded - the "
+               "sender restarted without resuming its counter. Accepting it would "
+               "reopen the replay window. Give the sender a counter above the last "
+               "accepted one, or restart this receiver to forget it",
+               this->sender_id_text_, static_cast<unsigned>(result.counter),
+               static_cast<unsigned>(this->decryptor_.lastCounter()));
+      break;
+    case BTHome::DecryptStatus::AuthFailed:
+      ESP_LOGW(TAG,
+               "%s: payload did not authenticate, discarded - wrong encryption_key, "
+               "or the payload was tampered with",
+               this->sender_id_text_);
+      break;
+    case BTHome::DecryptStatus::NotEncrypted:
+      // Refused rather than read: a device that accepts both encrypted and
+      // plaintext payloads is not encrypted at all, because an attacker simply
+      // sends the plaintext one.
+      ESP_LOGW(TAG,
+               "%s: plaintext payload from a sender configured with an "
+               "encryption_key, discarded",
+               this->sender_id_text_);
+      break;
+    case BTHome::DecryptStatus::BadBuffer:
+      ESP_LOGW(TAG, "%s: encrypted payload too short to hold a counter and MIC",
+               this->sender_id_text_);
+      break;
+    default:
+      ESP_LOGW(TAG, "%s: encrypted payload rejected (status %u)", this->sender_id_text_,
+               static_cast<unsigned>(result.status));
+      break;
+  }
+}
+#endif
 
 void NRF24BTHomeDevice::publish_static_info() {
 #ifdef USE_TEXT_SENSOR
@@ -112,7 +280,32 @@ static std::string button_event_name(uint8_t code) {
   }
 }
 
-bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
+bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, bool padded) {
+#ifdef USE_BTHOME_ENCRYPTION
+  // Holds the plaintext for as long as the payload is being read. Everything
+  // that points into the frame - the device name, the text and raw slots - is
+  // read again in commit_(), which still runs inside this function, so this
+  // outliving the parse is what makes those pointers safe.
+  //
+  // A whole frame minus the sender id is 28 bytes and the plaintext is shorter
+  // still, counter and MIC having dropped out; 32 is the frame the radio hands
+  // over, and sizing it that way means no arithmetic to get wrong.
+  uint8_t plain[32];
+  if (this->encrypted_) {
+    const auto result = this->decrypt_(data, len, padded, plain, sizeof(plain));
+    if (result.status != BTHome::DecryptStatus::Ok) {
+      this->report_decrypt_failure_(result);
+      return false;
+    }
+    // A fault that comes back is worth hearing about again.
+    this->warned_decrypt_ = false;
+    data = plain;
+    len = result.plain_len;
+  }
+#else
+  (void) padded;
+#endif
+
   BTHome::Decoder decoder(data, len);
   if (decoder.status() == BTHome::DecodeStatus::BadHeader) {
     ESP_LOGW(TAG, "%s: invalid BTHome service data", this->sender_id_text_);
@@ -448,6 +641,11 @@ void NRF24BTHomeDevice::check_timeout(uint32_t now_ms) {
   if (now_ms - reference <= this->timeout_ms_) {
     return;
   }
+  // Only the packet id is aged out here, never the replay counter of an
+  // encrypted device: that one exists precisely to outlive quiet periods, and
+  // forgetting it after fifteen seconds of silence would hand an attacker a
+  // window to replay a captured frame in.
+  //
   // Quiet period elapsed: forget the dedup id. The repeats it suppresses
   // arrive within milliseconds, and a sender that reboots (battery swap)
   // restarts its packet id counter - without aging, a 1-in-256 collision
@@ -488,6 +686,12 @@ void NRF24BTHomeDevice::dump_config() const {
 #endif
   ESP_LOGCONFIG(TAG, "    Entities: %u sensor, %u binary sensor, %u text sensor", sensors,
                 binaries, texts);
+#ifdef USE_BTHOME_ENCRYPTION
+  // Worth a line of its own: an encrypted sender talking to a device without a
+  // key, or the reverse, goes quiet with only a warning per frame to say so, and
+  // this is where one can see which of the two is configured.
+  ESP_LOGCONFIG(TAG, "    Encryption: %s", this->encrypted_ ? "AES-128-CCM" : "none");
+#endif
   ESP_LOGCONFIG(TAG, "    Triggers: %u on_button, %u on_dimmer",
                 static_cast<unsigned>(this->button_triggers_.size()),
                 static_cast<unsigned>(this->dimmer_triggers_.size()));

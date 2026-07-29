@@ -128,11 +128,31 @@ int main() {
   b.set_connected_binary_sensor(&b_connected);
   WatchingButton b_button(&b, "B");
 
+  // Device C takes encrypted payloads. Same paths as A, minus the ones the
+  // frame budget no longer has room for: every frame costs eight bytes of
+  // counter and MIC before an object is in it.
+  NRF24BTHomeDevice c;
+  c.set_sender_id({0xAA, 0x01, 0x00, 0x03});
+  c.set_timeout(15000);
+  Sensor c_battery("C.battery");
+  c.add_object_sensor(0x01, 1, &c_battery);
+  BinarySensor c_connected("C.connected");
+  c.set_connected_binary_sensor(&c_connected);
+  WatchingButton c_button(&c, "C");
+  // The key from the BTHome specification's own worked example, so a payload
+  // built here can be checked against a third implementation by hand. The nonce
+  // MAC is what the component's codegen derives: the sender id, zero-extended.
+  c.set_encryption_key({0x23, 0x1D, 0x39, 0xC1, 0xD7, 0xCC, 0x1A, 0xB1, 0xAE, 0xE2, 0x24,
+                        0xCD, 0x09, 0x6D, 0xB9, 0x32});
+  c.set_nonce_mac({0xAA, 0x01, 0x00, 0x03, 0x00, 0x00});
+
   hub.register_device(&a);
   hub.register_device(&b);
+  hub.register_device(&c);
   // What setup() would do, minus registering with the radio - there is none.
   a.publish_static_info();
   b.publish_static_info();
+  c.publish_static_info();
 
   std::string line;
   while (std::getline(std::cin, line)) {

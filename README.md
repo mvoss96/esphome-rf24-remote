@@ -171,6 +171,7 @@ nrf24:
 nrf24_bthome:
   devices:
     - sender_id: "B7:4F:E7:7F"   # printed in the remote's boot log
+      # encryption_key: "231d39c1d7cc1ab1aee224cd096db932"   # see Encryption
       on_button:
         # args: button (uint8_t, 1-based), event (std::string:
         # press, double_press, triple_press, long_press, ...)
@@ -310,8 +311,62 @@ Three entities come from the receiver's own view rather than from a frame:
 (text sensor). `connected` is not the same as the BTHome object `connectivity`
 (0x19): a sender cannot report over the radio that its radio stopped working.
 
-Encrypted BTHome payloads are refused with a warning. They are not supported and
-not planned — the ATmega senders this ecosystem is built around cannot encrypt.
+### Encryption
+
+A device given an `encryption_key` takes BTHome v2's AES-128-CCM payloads. The
+key is the same 32-hex-character bindkey Home Assistant asks for when adding an
+encrypted BTHome device, and the same one
+[esphome-bthome-broadcaster](https://github.com/mvoss96/esphome-bthome-broadcaster)
+takes on the sending side:
+
+```yaml
+nrf24_bthome:
+  devices:
+    - id: remote1
+      sender_id: "B7:4F:E7:7F"
+      encryption_key: "231d39c1d7cc1ab1aee224cd096db932"
+```
+
+Setting it makes encryption **mandatory** for that device: a plaintext payload
+from the same sender id is refused afterwards, with a warning. A receiver that
+accepts both is not encrypted at all — an attacker simply sends the plaintext
+one. Devices without a key are unaffected, and the two kinds can share a hub.
+
+Three things are worth knowing before turning it on.
+
+**The nonce needs six MAC bytes, and this transport has none.** BTHome builds
+its CCM nonce from the BLE advertiser address. Here the 4-byte sender id is what
+identifies a device, so it takes that place, zero-extended to six — sender id
+`B7:4F:E7:7F` gives nonce MAC `B7 4F E7 7F 00 00`. Both ends must derive it the
+same way, which is why the rule is written down here rather than left to each
+sender. `mac_address` overrides it, for the one case the rule cannot cover: a
+payload built for BLE with a real advertiser address and only carried over this
+radio.
+
+**Replay protection replaces the packet-id dedup.** Every accepted payload's
+counter is remembered, and one that does not exceed it is rejected — so the
+sender's broadcast repeats are dropped before the decoder ever sees them, which
+is both tighter and quieter than the packet id, and cannot be forged without the
+key. The consequence is that a sender must persist its counter and resume above
+it across reboots (the broadcaster keeps a 1024 margin for exactly this). One
+that restarts from zero is refused, and the receiver says so by name rather than
+just going silent. Two limits of the current implementation: the receiver does
+*not* persist its counter, so the first payload after a receiver restart is
+accepted whatever its counter, and the counter is per device in RAM only.
+
+**Padding and the payload length.** A plaintext payload is found by walking its
+objects, which is why the `0xFF` filler of a fixed-size slot is never trimmed.
+An encrypted one cannot be walked — where the ciphertext ends is where the
+counter begins, and both look like noise — so the padding is what says how long
+it is. That is exact unless the MIC itself ends in `0xFF`, about one frame in
+256, and for those the next lengths up are tried and the MIC decides which is
+right. It costs one extra decrypt on those frames and nothing on the rest, and
+it means encryption works on the fixed-size pipes this ecosystem uses rather
+than only on dynamic ones.
+
+`dump_config` prints `Encryption: AES-128-CCM` or `none` per device, because a
+mismatch between sender and receiver looks from the outside exactly like a radio
+that has stopped receiving.
 
 ## Writing your own listener
 
@@ -336,8 +391,11 @@ per-event battery updates, packet-id dedup of the broadcast repeats.
 - [x] Generic `nrf24` component: multi-pipe, air data rate / PA level,
       optional IRQ pin
 - [x] Every BTHome measurement, binary, text and raw object mapped
+- [x] BTHome v2 encryption (AES-128-CCM) with replay protection, host-tested
+      against a third implementation but not yet on the air: no sender in this
+      ecosystem encrypts yet
 - [ ] Transmitting (`nrf24.send`) — receive only so far
-- [ ] Encryption — not planned, see above
+- [ ] Persisting the replay counter across a receiver restart
 
 ## Tests
 
@@ -354,6 +412,12 @@ The last three build C++ against the bthome-cpp version pinned in
 `components/nrf24_bthome/__init__.py` — a check against a different one would
 prove nothing about the firmware. `tests/host/stubs/README.md` explains what the
 stubs do and do not prove.
+
+`test_device_logic.py` additionally needs mbedtls (`libmbedtls-dev`, the same
+CCM backend the firmware uses) and `pip install cryptography`, which builds the
+encrypted test frames. Deliberately a different implementation from the one
+under test: a round trip through bthome-cpp alone would only show that its two
+halves agree with each other, not that either agrees with BTHome.
 
 Two further benches live in the sniffer repository and drive real radios:
 `bench/validate_component.py` for the protocol behaviour and

@@ -93,6 +93,18 @@ nrf24_bthome:
                   const float ct = id(test_led).remote_values.get_color_temperature();
                   call.set_color_temperature(clamp(ct + steps * 15.0f, 153.0f, 370.0f));
                   call.perform();
+    # A second remote whose payloads are encrypted. Here so this job compiles the
+    # decryption path at all: the define that pulls mbedtls in is only emitted
+    # when some device carries a key, so without one nothing of it is built and
+    # the host tests would be the only thing that ever saw it.
+    - id: remote2
+      sender_id: "B7:4F:E7:80"
+      timeout: 3min
+      encryption_key: "231d39c1d7cc1ab1aee224cd096db932"
+      on_button:
+        - logger.log:
+            format: "remote 2 button %u: %s"
+            args: [button, event.c_str()]
 
 # Virtual CCT light on free pins (no physical LEDs needed): state is visible
 # and controllable in Home Assistant, driven by the remote via the automations.

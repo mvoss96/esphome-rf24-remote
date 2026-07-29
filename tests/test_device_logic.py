@@ -24,6 +24,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+except ImportError:  # pragma: no cover - a missing dependency, not a failing test
+    raise SystemExit(
+        "python-cryptography is required to build the encrypted test frames:\n"
+        "    pip install cryptography"
+    )
+
 REPO = Path(__file__).resolve().parent.parent
 COMPONENT = REPO / "components" / "nrf24_bthome"
 PROBE_SRC = Path(__file__).resolve().parent / "host" / "device_probe.cpp"
@@ -48,6 +56,68 @@ def pid():
     """A fresh packet id, so a case is never suppressed by the one before it."""
     _pid[0] = (_pid[0] + 1) & 0xFF or 1
     return f"00{_pid[0]:02X}"
+
+
+# ---- encrypted frames --------------------------------------------------------
+# Device C in the probe takes AES-128-CCM payloads. They are built here with
+# python-cryptography rather than with bthome-cpp's own Encryptor on purpose: a
+# round trip through one library would only show that its two halves agree with
+# each other. Against a third implementation, the nonce layout and the order of
+# ciphertext, counter and MIC have to be right in the absolute.
+C = "AA010003"
+BINDKEY = bytes.fromhex("231d39c1d7cc1ab1aee224cd096db932")
+WRONG_BINDKEY = bytes.fromhex("00112233445566778899aabbccddeeff")
+C_NONCE_MAC = bytes.fromhex("AA0100030000")  # the sender id, zero-extended
+INFO_ENCRYPTED = 0x45  # BTHome v2, trigger-based, encrypted bit set - HDR plus 0x01
+
+_counter = [0]
+
+
+def ctr():
+    """The next counter. Monotonic across the whole run, because the device's
+    replay state is: it is never aged out, which is the point of it."""
+    _counter[0] += 1
+    return _counter[0]
+
+
+def _seal(plaintext, counter, key, mac, info):
+    """The BTHome v2 ciphertext and MIC for one payload."""
+    nonce = (
+        mac
+        + (0xFCD2).to_bytes(2, "little")
+        + bytes([info])
+        + counter.to_bytes(4, "little")
+    )
+    sealed = AESCCM(key, tag_length=4).encrypt(nonce, plaintext, None)
+    return sealed[: len(plaintext)], sealed[len(plaintext) :]
+
+
+def enc(objects, counter, key=BINDKEY, pad_to=32, mac=C_NONCE_MAC, sender=C,
+        info=INFO_ENCRYPTED):
+    """[sender id][uuid][device info][ciphertext][counter][MIC], then padding."""
+    plaintext = bytes.fromhex(objects)
+    ciphertext, mic = _seal(plaintext, counter, key, mac, info)
+    service = (
+        (0xFCD2).to_bytes(2, "little")
+        + bytes([info])
+        + ciphertext
+        + counter.to_bytes(4, "little")
+        + mic
+    )
+    payload = bytes.fromhex(sender) + service
+    if pad_to:
+        payload = payload.ljust(pad_to, b"\xFF")
+    return "FRAME " + payload.hex().upper()
+
+
+def ctr_with_mic_ending_ff(objects, key=BINDKEY, mac=C_NONCE_MAC, info=INFO_ENCRYPTED):
+    """The next counter whose MIC ends in 0xFF - the case where the padding does
+    not say where the payload ends, and only the MIC can settle it."""
+    plaintext = bytes.fromhex(objects)
+    while True:
+        counter = ctr()
+        if _seal(plaintext, counter, key, mac, info)[1][-1] == 0xFF:
+            return counter
 
 
 # name, scenario lines, lines that must appear, lines that must not
@@ -180,6 +250,97 @@ CASES = [
      [r"malformed BTHome payload"]),
 ]
 
+# --- encryption ---------------------------------------------------------------
+# All of these run against device C. Every frame is built here rather than
+# inline, and in the order the cases send them, because both pieces of state
+# behind them run forwards only: the replay counter is never aged out, and the
+# packet id inside the payload still deduplicates once the payload is plaintext
+# again. A frame built out of order is rejected for a reason no case is testing.
+def objects(button=True):
+    """Packet id, battery 80%, and by default a button press."""
+    return pid() + "0150" + ("3A01" if button else "")
+
+
+_accepted = enc(objects(), ctr())
+# One frame sent three times, byte for byte - which is what the sender's repeats
+# are, counter and packet id included.
+_repeat = enc(objects(), ctr())
+_wrong_key_a = [enc(objects(), ctr(), key=WRONG_BINDKEY) for _ in range(3)]
+_recovers = enc(objects(), ctr())
+_wrong_key_b = [enc(objects(), ctr(), key=WRONG_BINDKEY) for _ in range(3)]
+_mic_ff_objects = objects()
+_mic_ff = enc(_mic_ff_objects, ctr_with_mic_ending_ff(_mic_ff_objects))
+_unpadded = enc(objects(), ctr(), pad_to=None)
+_alongside = enc(objects(), ctr())
+
+CASES += [
+    ("an encrypted payload authenticates and reaches the entities",
+     [_accepted],
+     [r"PUBLISH C.battery 80", r"TRIGGER C button 1 press$", r"PUBLISH C.connected ON"],
+     [r"LOG W AA:01:00:03"]),
+
+    # The counter does what the packet id does on a plaintext device, and does it
+    # better: a repeat is turned away before the decoder ever sees it, and cannot
+    # be forged without the bindkey.
+    ("the sender's repeats are replays, and are dropped without a word",
+     [_repeat, _repeat, _repeat],
+     [r"LOG V AA:01:00:03: repeat of counter "],
+     [r"LOG W AA:01:00:03"]),  # the press itself is counted below
+
+    # The senders of this ecosystem persist their counter and resume above it
+    # (bthome_broadcaster keeps a 1024 margin for exactly this), so a counter
+    # that moves backwards means one that did not - worth saying, because the
+    # symptom is otherwise a remote that has simply gone silent.
+    ("a counter that goes backwards is refused, and says why",
+     [enc(objects(), 1)],
+     [r"LOG W AA:01:00:03: counter went backwards"],
+     [r"TRIGGER C button 1 press$"]),
+
+    ("a wrong bindkey is reported once, however many copies arrive",
+     _wrong_key_a,
+     [r"LOG W AA:01:00:03: payload did not authenticate"],
+     [r"TRIGGER C button 1 press$", r"PUBLISH C.battery"]),
+
+    # The one-shot resets on a payload that does decrypt, so a fault that comes
+    # back is reported again instead of being swallowed for good.
+    ("and reported again after a payload that did decrypt",
+     [_recovers] + _wrong_key_b,
+     [r"TRIGGER C button 1 press$"],
+     []),  # the single warning is counted below
+
+    # Refused rather than read: a device that takes both is not encrypted at all,
+    # since an attacker simply sends the plaintext one.
+    ("a plaintext payload to an encrypted device is refused",
+     [frame(C, pid() + "01503A01")],
+     [r"LOG W AA:01:00:03: plaintext payload from a sender configured with an "
+      r"encryption_key"],
+     [r"TRIGGER C button 1 press$", r"PUBLISH C.battery"]),
+
+    # The frame is padded to 32 bytes with 0xFF and the MIC ends in 0xFF too, so
+    # the padding boundary alone points at a payload one byte too short. Only
+    # trying the next length up and letting the MIC decide gets this frame in -
+    # which is one frame in 256, i.e. several a day on a chatty sender.
+    ("a MIC ending in 0xFF is still told apart from the padding",
+     [_mic_ff],
+     [r"TRIGGER C button 1 press$", r"PUBLISH C.battery 80"],
+     [r"LOG W AA:01:00:03"]),
+
+    # A pipe with a dynamic payload size hands over the exact length, and then
+    # there is nothing to search for.
+    ("an unpadded frame needs no length search at all",
+     [_unpadded],
+     [r"TRIGGER C button 1 press$", r"PUBLISH C.battery 80"],
+     [r"LOG W AA:01:00:03"]),
+
+    # Nothing about C's traffic reaches the plaintext devices, and A refusing an
+    # encrypted payload is unchanged by C being able to read one.
+    ("an encrypted device does not disturb the plaintext ones",
+     [_alongside, frame(A, pid() + "01643A01")],
+     [r"TRIGGER C button 1 press$", r"TRIGGER A button 1 press$",
+      r"PUBLISH A.battery 100"],
+     [r"LOG W AA:01:00:01", r"LOG W AA:01:00:03"]),
+]
+
 # --- the timeout, which on hardware costs eighteen seconds per run ------------
 # The device's quiet period is 15 s. Nothing here waits: the clock is a value a
 # scenario sets.
@@ -225,9 +386,14 @@ CASES.append(
       r"LOG C     Timeout: 15000 ms",
       r"LOG C     Entities: 5 sensor, 2 binary sensor, 6 text sensor",
       r"LOG C     Triggers: 1 on_button, 1 on_dimmer",
+      r"LOG C     Encryption: none",
       r"LOG C   Device: AA:01:00:02",
       r"LOG C     Entities: 1 sensor, 1 binary sensor, 0 text sensor",
-      r"LOG C     Triggers: 1 on_button, 0 on_dimmer"],
+      r"LOG C     Triggers: 1 on_button, 0 on_dimmer",
+      # Which of the two a device is set up for, because getting it wrong looks
+      # from the outside exactly like a radio that has stopped receiving.
+      r"LOG C   Device: AA:01:00:03",
+      r"LOG C     Encryption: AES-128-CCM"],
      []))
 
 # Cases whose point is how many times something happened, not whether it did at
@@ -246,6 +412,12 @@ COUNTS = [
      r"TRIGGER A button 1 press", 3),
     ("a payload without a packet id cannot be deduplicated",
      r"LOG W AA:01:00:01: event objects without a packet id", 1),
+    ("the sender's repeats are replays, and are dropped without a word",
+     r"TRIGGER C button 1 press", 1),
+    ("a wrong bindkey is reported once, however many copies arrive",
+     r"LOG W AA:01:00:03: payload did not authenticate", 1),
+    ("and reported again after a payload that did decrypt",
+     r"LOG W AA:01:00:03: payload did not authenticate", 1),
 ]
 
 
@@ -284,7 +456,10 @@ def build_probe(src, workdir):
     subprocess.run(
         [os.environ.get("CXX", "g++"), "-std=c++17", "-O1", "-Wall", "-Wextra",
          "-I", str(STUBS), "-I", str(REPO), "-I", str(src / "src"),
-         "-o", str(exe), str(PROBE_SRC), str(COMPONENT / "nrf24_bthome.cpp")],
+         "-o", str(exe), str(PROBE_SRC), str(COMPONENT / "nrf24_bthome.cpp"),
+         # The stubs turn USE_BTHOME_ENCRYPTION on, and the component then takes
+         # its CCM backend from mbedtls exactly as the firmware does.
+         "-lmbedcrypto"],
         check=True)
     return exe
 
