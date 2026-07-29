@@ -120,6 +120,35 @@ behind stops acknowledging and the sender repeats instead of the frame being
 lost. The 250 kbps run needed 1352 retransmissions for 1346 frames and still
 arrived complete, at a fifth of the speed.
 
+### Where the limit actually sits
+
+Three ceilings, and the file rows above measure the lowest of them rather than
+this receiver:
+
+| | limit | set by |
+| --- | --- | --- |
+| sender over USB | ~36 kB/s | 500 kBaud serial, 680 µs a frame |
+| sender from flash | 194 kB/s | 161 µs a frame, true line rate |
+| this receiver | ~44 kB/s | ~700 µs a frame, mostly the ESPHome loop |
+
+A sending *node* with the data in its own memory is not on the serial line, so
+for that case the receiver is the constraint - not the 36 kB/s a dongle on USB
+manages.
+
+With acknowledgements the two settle it between themselves. A sender clocking
+from flash at 2 Mbps, which alone would offer 6200 frames a second, ends up at
+923 µs a frame against this receiver:
+
+```
+OK txtest sent=3000/3000 ack=yes failed=0 retries=750 us_per=923
+receiver: 3000/3000 = 100.0%
+```
+
+**1083 frames a second, 33.8 kB/s, nothing lost.** The sender was throttled from
+161 µs to 923 µs a frame by nothing but the handshake, and the 750
+retransmissions are the moments the receiver was not ready. That is what a
+stream over this link looks like when it is asked to arrive intact.
+
 ## Writing your own listener
 
 Any component can consume raw frames by implementing `nrf24::NRF24Listener`:
