@@ -387,13 +387,20 @@ Hardware-verified end to end (ESP32-C3, esp-idf) against the RotRemote_BTHome
 sender: click, rotate (dimmer 1), held-rotate (dimmer 2), periodic status,
 per-event battery updates, packet-id dedup of the broadcast repeats.
 
+Encryption is verified the same way, on the WT32-ETH01 lab hub with frames
+played by a sniffer dongle (`tests/wt32-eth01.yaml`, device `dongle_enc`): a
+payload authenticates and publishes, the sender's repeats drop out as replays, a
+wrong bindkey and a plaintext payload are each refused by name, a counter that
+moves backwards is refused and explained, and a frame whose MIC ends in `0xFF`
+— where the padding cannot say how long the payload is — still decodes.
+
 - [x] bthome-cpp pinned to registry release `mvoss96/bthome-cpp@0.4.2`
 - [x] Generic `nrf24` component: multi-pipe, air data rate / PA level,
       optional IRQ pin
 - [x] Every BTHome measurement, binary, text and raw object mapped
-- [x] BTHome v2 encryption (AES-128-CCM) with replay protection, host-tested
-      against a third implementation but not yet on the air: no sender in this
-      ecosystem encrypts yet
+- [x] BTHome v2 encryption (AES-128-CCM) with replay protection, verified on the
+      air against dongle-played frames — no sender in this ecosystem encrypts
+      yet, so that is the only way it gets exercised
 - [ ] Transmitting (`nrf24.send`) — receive only so far
 - [ ] Persisting the replay counter across a receiver restart
 

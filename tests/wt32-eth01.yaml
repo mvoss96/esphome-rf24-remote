@@ -145,6 +145,24 @@ nrf24_bthome:
             format: "DEV=B dimmer %u: %d steps"
             args: [dimmer, steps]
 
+    # The encrypted sender, also played by a dongle: no remote in this ecosystem
+    # encrypts yet, so this is the only way the decryption path is ever exercised
+    # on the air rather than only against host stubs. The key is the one from the
+    # BTHome specification's worked example, and the nonce MAC it implies is the
+    # sender id zero-extended - AA 01 00 05 00 00.
+    - id: dongle_enc
+      sender_id: "AA:01:00:05"
+      timeout: 15s
+      encryption_key: "231d39c1d7cc1ab1aee224cd096db932"
+      on_button:
+        - logger.log:
+            format: "DEV=ENC button %u: %s"
+            args: [button, event.c_str()]
+      on_dimmer:
+        - logger.log:
+            format: "DEV=ENC dimmer %u: %d steps"
+            args: [dimmer, steps]
+
 output:
   - platform: gpio
     pin:
@@ -193,6 +211,13 @@ sensor:
       internal: true
     voltage:
       name: "B Voltage"
+      internal: true
+  # A published value is the proof that matters for the encrypted device: the
+  # log says a payload authenticated, this says the plaintext behind it decoded.
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: dongle_enc
+    battery:
+      name: "ENC Battery"
       internal: true
   - platform: nrf24_bthome
     nrf24_bthome_device_id: sensor_node
