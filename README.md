@@ -149,6 +149,174 @@ receiver: 3000/3000 = 100.0%
 retransmissions are the moments the receiver was not ready. That is what a
 stream over this link looks like when it is asked to arrive intact.
 
+## Configuration
+
+```yaml
+external_components:
+  - source: github://mvoss96/esphome-rf24-remote@v0.3.0
+    components: [nrf24, nrf24_bthome]
+
+spi:
+  clk_pin: GPIO4
+  miso_pin: GPIO5
+  mosi_pin: GPIO6
+
+nrf24:
+  cs_pin: GPIO8
+  ce_pin: GPIO7
+  # irq_pin: GPIO9        # optional; without it a frame waits for the next loop
+  channel: 100            # 0-125, default 100
+  air_data_rate: 250kbps  # 250kbps (default) / 1Mbps / 2Mbps
+  pa_level: 0dBm          # -18dBm / -12dBm / -6dBm / 0dBm (default)
+  watchdog_timeout: 5min  # 0s disables; keep well above the senders' status interval
+  pipes:
+    - address: "BTHME"    # 5 chars or "42:54:48:4D:45"
+
+nrf24_bthome:
+  devices:
+    - sender_id: "B7:4F:E7:7F"   # printed in the remote's boot log
+      on_button:
+        # args: button (uint8_t, 1-based), event (std::string:
+        # press, double_press, triple_press, long_press, ...)
+        - logger.log:
+            format: "button %u: %s"
+            args: [button, event.c_str()]
+      on_dimmer:
+        # args: dimmer (uint8_t, 1-based instance), steps (int,
+        # negative = rotate left, positive = rotate right)
+        - light.dim_relative:
+            id: my_light
+            relative_brightness: !lambda return steps * 0.03;
+```
+
+Frames from sender IDs without a `devices` entry are logged at DEBUG and
+ignored — pairing a remote to a lamp is purely a YAML decision.
+
+Additional pipes (2-5) share all but their **first** address byte (the
+on-air LSB) with pipe 1 — an nRF24 hardware constraint, enforced at config
+time:
+
+```yaml
+nrf24:
+  # ...
+  pipes:
+    - address: "BTHME"
+    - address: "XTHME"   # differs only in the first byte
+```
+
+## Entities
+
+Every BTHome object is declared by name, one key per quantity:
+
+```yaml
+sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    battery:
+      name: "Remote Battery"
+    temperature:
+      name: "Remote Temperature"
+
+binary_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    motion:
+      name: "Remote Motion"
+
+text_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    device_name:
+      name: "Remote Name"
+    firmware_version:
+      name: "Remote Firmware"
+```
+
+Named keys rather than a bare object id, because BTHome carries a value's width,
+sign and scale but not its unit or meaning. A generic mapping would make every
+user supply unit, device class and accuracy by hand, and a wrong guess produces
+an entity that looks correct in Home Assistant and is not.
+
+**Measurements** (`sensor`), 49 keys over all 58 measurement object ids:
+
+`battery`, `temperature`, `humidity`, `pressure`, `illuminance`, `mass`,
+`mass_lb`, `dewpoint`, `count`, `energy`, `power`, `voltage`, `pm2_5`, `pm10`,
+`co2`, `tvoc`, `moisture`, `humidity_u8`, `moisture_u8`, `rotation`,
+`distance_mm`, `distance_m`, `duration`, `current`, `speed`, `temperature_c1`,
+`uv_index`, `volume`, `volume_ml`, `volume_flow_rate`, `voltage_centi`, `gas`,
+`volume_u32`, `water`, `timestamp`, `acceleration`, `gyroscope`,
+`volume_storage`, `conductivity`, `temperature_s8`, `temperature_s8_035`,
+`direction`, `precipitation`, `channel`, `rotational_speed`, `speed_s32`,
+`acceleration_s32`, `light_level`, `settings_revision`
+
+**Binary objects** (`binary_sensor`), all 28:
+
+`generic`, `power`, `opening`, `battery_low`, `battery_charging`,
+`carbon_monoxide`, `cold`, `connectivity`, `door`, `garage_door`, `gas`, `heat`,
+`light`, `lock`, `moisture`, `motion`, `moving`, `occupancy`, `plug`,
+`presence`, `problem`, `running`, `safety`, `smoke`, `sound`, `tamper`,
+`vibration`, `window`
+
+**Text and raw** (`text_sensor`): `text` (0x53) and `raw` (0x54). Raw is
+published as uppercase hex without separators — the bytes are not characters, a
+zero among them would end a string early, and most values above 0x7F are not
+printable.
+
+### Which ids share a key
+
+BTHome states the same quantity several ways. Ids that differ **in width or sign
+alone** share one key, because a sender picks one of them and they are the same
+measurement at the same resolution:
+
+| Key | Object ids |
+| --- | --- |
+| `count` | 0x09, 0x3D, 0x3E, 0x59, 0x5A, 0x5B |
+| `energy` | 0x0A, 0x4D |
+| `power` | 0x0B, 0x5C |
+| `current` | 0x43, 0x5D |
+| `gas` | 0x4B, 0x4C |
+
+Where the **resolution or the unit** differs the key stays separate, even for
+the same quantity, and carries the library's name for the id: `temperature_c1`
+(0x45), `temperature_s8` (0x57), `temperature_s8_035` (0x58), `humidity_u8`
+(0x2E), `moisture_u8` (0x2F), `voltage_centi` (0x4A), `volume_ml` (0x48),
+`volume_u32` (0x4E), `mass_lb` (0x07), `speed_s32` (0x62),
+`acceleration_s32` (0x63). One entity has one `accuracy_decimals`, and folding
+0x02 (hundredths of a degree) together with 0x57 (whole degrees) would make it
+claim a precision that depends on which id happened to arrive.
+
+### Instances
+
+`index:` selects which occurrence of an object in a frame an entity takes — the
+k-th object of a type addresses instance k, the convention buttons and dimmers
+already follow. A node with two probes of one kind gets an entity for each
+instead of the second overwriting the first. A second instance needs its own
+platform entry:
+
+```yaml
+sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    temperature:
+      name: "Probe 1"
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    temperature:
+      name: "Probe 2"
+      index: 2
+```
+
+### Observed rather than received
+
+Three entities come from the receiver's own view rather than from a frame:
+`last_seen` (timestamp, requires `time_id` on the `nrf24_bthome` hub),
+`connected` (binary sensor, requires `timeout` on the device) and `sender_id`
+(text sensor). `connected` is not the same as the BTHome object `connectivity`
+(0x19): a sender cannot report over the radio that its radio stopped working.
+
+Encrypted BTHome payloads are refused with a warning. They are not supported and
+not planned — the ATmega senders this ecosystem is built around cannot encrypt.
+
 ## Writing your own listener
 
 Any component can consume raw frames by implementing `nrf24::NRF24Listener`:
