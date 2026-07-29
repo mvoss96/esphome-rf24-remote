@@ -1,0 +1,84 @@
+# What the nrf24 component can take, measured rather than estimated.
+#
+# Deliberately bare: no BTHome layer, no entities, no per-frame logging. What is
+# left is the driver - the interrupt, the FIFO drain and the SPI reads - so the
+# number that comes out is the receiver's own ceiling and not the cost of
+# whatever was listening. Add `nrf24_bthome` back to see what decoding costs on
+# top; that difference is the interesting one.
+#
+# The rate is edited here and flashed per measurement: a radio has one.
+#
+#   esphome run tests/throughput.yaml --device 192.168.2.70 --no-logs
+#
+# Frames received and the FIFO-full count are read from dump_config, which
+# ESPHome re-runs when a log client connects:
+#
+#   esphome logs tests/throughput.yaml --device 192.168.2.70
+substitutions:
+  air_rate: "250kbps"   # 250kbps | 1Mbps | 2Mbps
+  # The two pipe modes a transfer can use. Broadcast is what a sensor does: no
+  # acknowledgement, a lost frame is simply gone. Acknowledged is what a file
+  # needs, and on this chip it is only available with dynamic payload lengths.
+  #   broadcast    pipe_size: "32"        pipe_ack: "false"
+  #   acknowledged pipe_size: "dynamic"   pipe_ack: "true"
+  pipe_size: "32"
+  pipe_ack: "false"
+
+esphome:
+  name: nrf24-esp32hub
+  friendly_name: NRF24 ESP32Hub
+
+esp32:
+  board: wt32-eth01
+  framework:
+    type: esp-idf
+
+ethernet:
+  type: LAN8720
+  mdc_pin: GPIO23
+  mdio_pin: GPIO18
+  clk:
+    mode: CLK_EXT_IN
+    pin: GPIO0
+  phy_addr: 1
+  power_pin: GPIO16
+
+# INFO, and no serial port. Both matter for the measurement: a VERBOSE line per
+# frame costs more time than the frame itself takes on the air, and a blocking
+# write at 115200 baud costs an order of magnitude more than that.
+logger:
+  # DEBUG rather than INFO: the counters this measurement reads are printed by
+  # dump_config, which logs at CONFIG - a level *above* INFO, so INFO hides
+  # exactly the numbers we came for. DEBUG is still quiet per frame; the
+  # frame-by-frame lines are VERBOSE.
+  level: DEBUG
+  baud_rate: 0
+
+api:
+
+ota:
+  - platform: esphome
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+
+spi:
+  clk_pin: GPIO12
+  mosi_pin: GPIO14
+  miso_pin: GPIO15
+
+nrf24:
+  cs_pin: GPIO2
+  ce_pin: GPIO4
+  irq_pin: GPIO33
+  channel: 90
+  air_data_rate: ${air_rate}
+  # One pipe, fixed 32 bytes, no auto-ack: the sender is a stream, not a
+  # conversation, and a fixed size means the chip is never asked how long a
+  # payload is - the one question these modules answer unreliably.
+  pipes:
+    - address: "CTHME"
+      payload_size: ${pipe_size}
+      auto_ack: ${pipe_ack}

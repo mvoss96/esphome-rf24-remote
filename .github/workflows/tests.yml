@@ -1,0 +1,64 @@
+# The checks that need no radio. What they cover, and why each is here:
+#
+#   config   - the combinations the nRF24 cannot do must be refused at config
+#              time, because on the air they fail silently.
+#   types    - the mapping from BTHome object id to a Home Assistant sensor is
+#              the component's own invention; nothing in a build verifies it,
+#              and a wrong id yields a plausible-looking entity reading the
+#              wrong quantity.
+#   compile  - the generated C++ actually builds for the target.
+#
+# The bench under the sniffer repo covers what only hardware can show - that a
+# decoded value reaches the configured entity - and is not run here.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: config rules and sensor types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install esphome
+      - name: Config rules
+        run: python tests/validate_config_rules.py
+      # The three that build C++ take the library at the version
+      # components/nrf24_bthome/__init__.py pins - checking against a different
+      # one would prove nothing about the firmware.
+      - name: Radio register logic
+        run: python tests/test_nrf24_config.py
+      - name: Sensor types against the pinned bthome-cpp
+        run: python tests/test_sensor_types.py
+      - name: Device logic
+        run: python tests/test_device_logic.py
+      - name: The lab configurations still validate
+        # Neither is built in CI - one wants a WT32-ETH01 on the network, the
+        # other is flashed by hand per measurement - so without this they rot
+        # unnoticed until someone tries to flash one.
+        run: |
+          esphome config tests/wt32-eth01.yaml >/dev/null
+          esphome config tests/throughput.yaml >/dev/null
+
+  compile:
+    name: compile for esp32-c3
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-${{ hashFiles('tests/esp32c3.yaml') }}
+          restore-keys: platformio-
+      - run: pip install esphome
+      - run: esphome compile tests/esp32c3.yaml

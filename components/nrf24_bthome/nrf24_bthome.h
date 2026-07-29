@@ -75,18 +75,36 @@ class NRF24BTHomeDevice {
   bool handle_service_data(const uint8_t *data, size_t len);
 
 #ifdef USE_SENSOR
-  void set_battery_sensor(sensor::Sensor *s) { this->battery_sensor_ = s; }
-  void set_voltage_sensor(sensor::Sensor *s) { this->voltage_sensor_ = s; }
+  // Every measurement sensor is registered the same way, battery and voltage
+  // included: they are BTHome objects like any other and had no business being
+  // special cases. `index` selects which occurrence of that object in a frame
+  // this sensor takes - the k-th object of a type addresses instance k, the
+  // convention buttons and dimmers already follow.
+  void add_object_sensor(uint8_t object_id, uint8_t index, sensor::Sensor *s) {
+    this->object_sensors_.push_back(ObjectSensor{object_id, index, s, false, 0.0f});
+  }
   void set_last_seen_sensor(sensor::Sensor *s) { this->last_seen_sensor_ = s; }
 #endif
 #ifdef USE_TEXT_SENSOR
   void set_name_text_sensor(text_sensor::TextSensor *s) { this->name_text_sensor_ = s; }
+  // BTHome's text (0x53) and raw (0x54) objects, both [length][bytes]. Text goes
+  // through as characters, raw as hex - the bytes are not a string and printing
+  // them as one would cut the value at the first zero.
+  void add_object_text_sensor(uint8_t object_id, uint8_t index, text_sensor::TextSensor *s) {
+    this->object_text_sensors_.push_back(ObjectTextSensor{object_id, index, s, false, nullptr, 0});
+  }
   void set_firmware_text_sensor(text_sensor::TextSensor *s) { this->firmware_text_sensor_ = s; }
   void set_sender_id_text_sensor(text_sensor::TextSensor *s) { this->sender_id_text_sensor_ = s; }
 #endif
 
 #ifdef USE_BINARY_SENSOR
   void set_connected_binary_sensor(binary_sensor::BinarySensor *s) { this->connected_sensor_ = s; }
+  // A BTHome binary object - motion, door, smoke and the rest. One byte, 0 or 1,
+  // and otherwise handled exactly like a measurement: buffered until the payload
+  // has been read to the end, and addressed by instance.
+  void add_object_binary_sensor(uint8_t object_id, uint8_t index, binary_sensor::BinarySensor *s) {
+    this->object_binary_sensors_.push_back(ObjectBinarySensor{object_id, index, s, false, false});
+  }
 #endif
 #ifdef USE_TIME
   void set_time(time::RealTimeClock *rtc) { this->rtc_ = rtc; }
@@ -97,6 +115,13 @@ class NRF24BTHomeDevice {
 
   // Publishes configuration-known values (sender ID); called once by the hub.
   void publish_static_info();
+
+  // What this device is set up to receive. Worth printing because both halves
+  // are misconfigurations that look like a dead radio from the outside: a
+  // timeout shorter than the sender's status interval reports it offline
+  // between broadcasts, and a platform entry that never attached shows up here
+  // as a device with no entities at all.
+  void dump_config() const;
 
   // Called periodically by the hub: after the quiet period it ages out the
   // packet-id dedup state and flips the connectivity sensor to offline.
@@ -132,10 +157,6 @@ class NRF24BTHomeDevice {
     bool overflow{false};  // more event objects than MAX_EVENTS
 
     int16_t packet_id{-1};  // -1 = the payload carried none
-    bool has_battery{false};
-    float battery{0.0f};
-    bool has_voltage{false};
-    float voltage{0.0f};
     // Points into the caller's frame buffer, which outlives this struct: it is
     // only read before handle_service_data() returns.
     const uint8_t *name{nullptr};
@@ -149,25 +170,52 @@ class NRF24BTHomeDevice {
   std::array<uint8_t, 4> sender_id_{{0, 0, 0, 0}};
   char sender_id_text_[12]{"00:00:00:00"};
   int16_t last_packet_id_{-1};  // -1 = nothing received yet
+  bool warned_no_packet_id_{false};
   uint32_t timeout_ms_{0};
   uint32_t last_contact_ms_{0};  // millis() of the last valid frame (repeats count)
   bool ever_seen_{false};
   std::vector<Trigger<uint8_t, std::string> *> button_triggers_;
   std::vector<Trigger<uint8_t, int> *> dimmer_triggers_;
 #ifdef USE_SENSOR
-  sensor::Sensor *battery_sensor_{nullptr};
-  sensor::Sensor *voltage_sensor_{nullptr};
-#endif
-#ifdef USE_SENSOR
+  // The value carried by the current payload is parked in the slot itself
+  // rather than in Pending: one payload is processed at a time, and this keeps
+  // a per-frame struct from growing with the number of configured sensors.
+  struct ObjectSensor {
+    uint8_t object_id;
+    uint8_t index;  // 1-based occurrence of that object id within one payload
+    sensor::Sensor *sensor;
+    bool has_pending;
+    float pending;
+  };
+  std::vector<ObjectSensor> object_sensors_;
   sensor::Sensor *last_seen_sensor_{nullptr};
 #endif
 #ifdef USE_TEXT_SENSOR
   text_sensor::TextSensor *name_text_sensor_{nullptr};
   text_sensor::TextSensor *firmware_text_sensor_{nullptr};
   text_sensor::TextSensor *sender_id_text_sensor_{nullptr};
+  struct ObjectTextSensor {
+    uint8_t object_id;
+    uint8_t index;  // 1-based occurrence of that object id within one payload
+    text_sensor::TextSensor *sensor;
+    bool has_pending;
+    // Into the caller's frame buffer, which outlives the parse: read once in
+    // commit_(), which still runs inside handle_service_data().
+    const uint8_t *bytes;
+    uint8_t length;
+  };
+  std::vector<ObjectTextSensor> object_text_sensors_;
 #endif
 #ifdef USE_BINARY_SENSOR
   binary_sensor::BinarySensor *connected_sensor_{nullptr};
+  struct ObjectBinarySensor {
+    uint8_t object_id;
+    uint8_t index;  // 1-based occurrence of that object id within one payload
+    binary_sensor::BinarySensor *sensor;
+    bool has_pending;
+    bool pending;
+  };
+  std::vector<ObjectBinarySensor> object_binary_sensors_;
 #endif
 #ifdef USE_TIME
   time::RealTimeClock *rtc_{nullptr};

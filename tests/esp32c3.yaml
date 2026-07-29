@@ -125,12 +125,31 @@ sensor:
       name: "Remote 1 Voltage"
     last_seen:
       name: "Remote 1 Last Seen"
+    # Three shapes of measurement mapping, so the generated code for all of them
+    # is compiled: one with a unit and a device class, one with neither, and one
+    # addressing an instance other than the first.
+    temperature:
+      name: "Remote 1 Temperature"
+    count:
+      name: "Remote 1 Count"
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: remote1
+    temperature:
+      name: "Remote 1 Temperature 2"
+      index: 2
 
 binary_sensor:
   - platform: nrf24_bthome
     nrf24_bthome_device_id: remote1
     connected:
       name: "Remote 1 Connected"
+    # A binary object the sender puts in a frame, next to the link state the
+    # receiver observes - the two look alike in YAML and come from opposite
+    # directions, so both are compiled here.
+    motion:
+      name: "Remote 1 Motion"
+    generic:
+      name: "Remote 1 Generic"
 
 text_sensor:
   - platform: nrf24_bthome
@@ -141,3 +160,9 @@ text_sensor:
       name: "Remote 1 Firmware"
     sender_id:
       name: "Remote 1 Sender ID"
+    # The two variable-length objects: text goes through as characters, raw as
+    # hex, and both paths are generated from here.
+    text:
+      name: "Remote 1 Text"
+    raw:
+      name: "Remote 1 Raw"

@@ -137,6 +137,48 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
   // why nothing may be published or triggered from inside this loop.
   Pending pending;
 
+  // Per-payload instance counters: how often each object id has been seen so
+  // far. Twelve is the most a frame can carry - a 32-byte slot leaves 25 bytes
+  // of objects after the sender id and the BTHome header, and the smallest
+  // object is two bytes. It used to be eight, on the belief that a frame could
+  // not hold more; twelve single-byte objects fit, and the ninth id onwards
+  // would then have been counted as instance 1 every time.
+  uint8_t seen_ids[12] = {};
+  uint8_t seen_instances[12] = {};
+  uint8_t seen_count = 0;
+  // The k-th object of a type addresses instance k. Counted per payload and per
+  // object id, so a node with two temperature probes can have one entity each
+  // instead of the second silently overwriting the first. Measurements and
+  // binary objects share the counter because their id spaces do not overlap.
+  auto instance_of = [&](uint8_t object_id) -> uint8_t {
+    for (uint8_t i = 0; i < seen_count; i++) {
+      if (seen_ids[i] == object_id) {
+        return ++seen_instances[i];
+      }
+    }
+    if (seen_count < sizeof(seen_ids)) {
+      seen_ids[seen_count] = object_id;
+      seen_instances[seen_count] = 1;
+      seen_count++;
+    }
+    return 1;
+  };
+#ifdef USE_SENSOR
+  for (auto &slot : this->object_sensors_) {
+    slot.has_pending = false;
+  }
+#endif
+#ifdef USE_BINARY_SENSOR
+  for (auto &slot : this->object_binary_sensors_) {
+    slot.has_pending = false;
+  }
+#endif
+#ifdef USE_TEXT_SENSOR
+  for (auto &slot : this->object_text_sensors_) {
+    slot.has_pending = false;
+  }
+#endif
+
   BTHome::Decoded obj;
   while (decoder.next(obj)) {
     switch (obj.kind) {
@@ -163,20 +205,56 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
         break;
       }
       case BTHome::ObjectKind::Sensor: {
-        ESP_LOGV(TAG, "%s: sensor 0x%02X: %.3f", this->sender_id_text_, obj.object_id, obj.value);
-        if (obj.is(BTHome::ObjectId::Battery)) {
-          pending.has_battery = true;
-          pending.battery = obj.value;
+        const uint8_t instance = instance_of(obj.object_id);
+        ESP_LOGV(TAG, "%s: sensor 0x%02X#%u: %.3f", this->sender_id_text_, obj.object_id,
+                 instance, obj.value);
+#ifdef USE_SENSOR
+        for (auto &slot : this->object_sensors_) {
+          if (slot.object_id == obj.object_id && slot.index == instance) {
+            slot.has_pending = true;
+            slot.pending = obj.value;
+          }
         }
-        if (obj.is(BTHome::ObjectId::Voltage)) {
-          pending.has_voltage = true;
-          pending.voltage = obj.value;
-        }
+#endif
         break;
       }
-      case BTHome::ObjectKind::Text: {
-        pending.name = obj.bytes;
-        pending.name_len = obj.length;
+      case BTHome::ObjectKind::Binary: {
+        const uint8_t instance = instance_of(obj.object_id);
+        const bool state = obj.raw != 0;
+        ESP_LOGV(TAG, "%s: binary 0x%02X#%u: %s", this->sender_id_text_, obj.object_id,
+                 instance, state ? "on" : "off");
+#ifdef USE_BINARY_SENSOR
+        for (auto &slot : this->object_binary_sensors_) {
+          if (slot.object_id == obj.object_id && slot.index == instance) {
+            slot.has_pending = true;
+            slot.pending = state;
+          }
+        }
+#endif
+        break;
+      }
+      case BTHome::ObjectKind::Text:
+      case BTHome::ObjectKind::Raw: {
+        const bool is_text = obj.kind == BTHome::ObjectKind::Text;
+        const uint8_t instance = instance_of(obj.object_id);
+        ESP_LOGV(TAG, "%s: %s 0x%02X#%u: %u bytes", this->sender_id_text_,
+                 is_text ? "text" : "raw", obj.object_id, instance,
+                 static_cast<unsigned>(obj.length));
+        // The device name is the first text object, which is what senders use
+        // 0x53 for; further ones need a text_sensor of their own.
+        if (is_text && instance == 1) {
+          pending.name = obj.bytes;
+          pending.name_len = obj.length;
+        }
+#ifdef USE_TEXT_SENSOR
+        for (auto &slot : this->object_text_sensors_) {
+          if (slot.object_id == obj.object_id && slot.index == instance) {
+            slot.has_pending = true;
+            slot.bytes = obj.bytes;
+            slot.length = obj.length;
+          }
+        }
+#endif
         break;
       }
       case BTHome::ObjectKind::DeviceTypeId: {
@@ -223,6 +301,21 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len) {
     return false;
   }
 
+  // BTHome makes the packet id optional, and for measurements its absence costs
+  // nothing - the same reading is published a few times over. For an event it
+  // is the difference between one press and three, because there is then
+  // nothing by which a repeat can be told from a new press. Measured on the
+  // bench: three copies of one frame, three button events. Said once per
+  // device; the sender will not start including one halfway through.
+  if (pending.packet_id < 0 && (pending.button_count > 0 || pending.dimmer_count > 0) &&
+      !this->warned_no_packet_id_) {
+    this->warned_no_packet_id_ = true;
+    ESP_LOGW(TAG,
+             "%s: event objects without a packet id - repeats cannot be told from new "
+             "events, so every copy the sender broadcasts fires again",
+             this->sender_id_text_);
+  }
+
   // The sender repeats every frame a few times (NO_ACK broadcast); an unchanged
   // packet id identifies those repeats. Checked here rather than where the
   // object appeared, so the order of the objects cannot decide the outcome.
@@ -266,15 +359,48 @@ void NRF24BTHomeDevice::commit_(const Pending &pending) {
   }
 
 #ifdef USE_SENSOR
-  if (pending.has_battery && this->battery_sensor_ != nullptr) {
-    this->battery_sensor_->publish_state(pending.battery);
+  for (auto &slot : this->object_sensors_) {
+    if (slot.has_pending && slot.sensor != nullptr) {
+      slot.sensor->publish_state(slot.pending);
+    }
   }
-  if (pending.has_voltage && this->voltage_sensor_ != nullptr) {
-    this->voltage_sensor_->publish_state(pending.voltage);
+#endif
+
+#ifdef USE_BINARY_SENSOR
+  for (auto &slot : this->object_binary_sensors_) {
+    if (slot.has_pending && slot.sensor != nullptr) {
+      slot.sensor->publish_state(slot.pending);
+    }
   }
 #endif
 
 #ifdef USE_TEXT_SENSOR
+  for (auto &slot : this->object_text_sensors_) {
+    if (!slot.has_pending || slot.sensor == nullptr) {
+      continue;
+    }
+    std::string value;
+    if (slot.object_id == static_cast<uint8_t>(BTHome::ObjectId::Raw)) {
+      // Raw is bytes, not characters: a zero in the middle would end a string
+      // and anything above 0x7F is not printable. Hex, uppercase and without
+      // separators - the form the frame itself is written in.
+      static const char HEX[] = "0123456789ABCDEF";
+      value.reserve(static_cast<size_t>(slot.length) * 2);
+      for (uint8_t i = 0; i < slot.length; i++) {
+        value.push_back(HEX[slot.bytes[i] >> 4]);
+        value.push_back(HEX[slot.bytes[i] & 0x0F]);
+      }
+    } else {
+      value.assign(reinterpret_cast<const char *>(slot.bytes), slot.length);
+    }
+    // Only on change, as the device name already was: a text object is a
+    // sender's identity far more often than a reading, and republishing the
+    // same string with every broadcast fills the recorder with nothing.
+    if (!slot.sensor->has_state() || slot.sensor->state != value) {
+      slot.sensor->publish_state(value);
+    }
+  }
+
   if (pending.name != nullptr && this->name_text_sensor_ != nullptr) {
     const std::string name(reinterpret_cast<const char *>(pending.name), pending.name_len);
     if (!this->name_text_sensor_->has_state() || this->name_text_sensor_->state != name) {
@@ -337,10 +463,40 @@ void NRF24BTHomeDevice::check_timeout(uint32_t now_ms) {
 #endif
 }
 
+void NRF24BTHomeDevice::dump_config() const {
+  ESP_LOGCONFIG(TAG, "  Device: %s", this->sender_id_text_);
+  if (this->timeout_ms_ == 0) {
+    ESP_LOGCONFIG(TAG, "    Timeout: none (offline detection disabled)");
+  } else {
+    ESP_LOGCONFIG(TAG, "    Timeout: %u ms", static_cast<unsigned>(this->timeout_ms_));
+  }
+
+  unsigned sensors = 0, binaries = 0, texts = 0;
+#ifdef USE_SENSOR
+  sensors = static_cast<unsigned>(this->object_sensors_.size()) +
+            (this->last_seen_sensor_ != nullptr ? 1u : 0u);
+#endif
+#ifdef USE_BINARY_SENSOR
+  binaries = static_cast<unsigned>(this->object_binary_sensors_.size()) +
+             (this->connected_sensor_ != nullptr ? 1u : 0u);
+#endif
+#ifdef USE_TEXT_SENSOR
+  texts = static_cast<unsigned>(this->object_text_sensors_.size()) +
+          (this->name_text_sensor_ != nullptr ? 1u : 0u) +
+          (this->firmware_text_sensor_ != nullptr ? 1u : 0u) +
+          (this->sender_id_text_sensor_ != nullptr ? 1u : 0u);
+#endif
+  ESP_LOGCONFIG(TAG, "    Entities: %u sensor, %u binary sensor, %u text sensor", sensors,
+                binaries, texts);
+  ESP_LOGCONFIG(TAG, "    Triggers: %u on_button, %u on_dimmer",
+                static_cast<unsigned>(this->button_triggers_.size()),
+                static_cast<unsigned>(this->dimmer_triggers_.size()));
+}
+
 void NRF24BTHomeHub::dump_config() {
   ESP_LOGCONFIG(TAG, "nRF24 BTHome receiver:");
   for (auto *dev : this->devices_) {
-    ESP_LOGCONFIG(TAG, "  Device: %s", dev->sender_id_text());
+    dev->dump_config();
   }
 }
 

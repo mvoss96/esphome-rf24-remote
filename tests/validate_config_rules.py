@@ -301,6 +301,109 @@ check("R23 watchdog_timeout 0s (disabled) validates",
     - address: "BTHME"
 """)
 
+# ---- the measurement types --------------------------------------------------
+PROBE_DEVICE = GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+"""
+
+check("R24 a measurement type the component does not map is refused",
+      PROBE_DEVICE + """    luminous_flux:
+      name: X
+""", ANY)
+
+check("R25 index 0 is refused - instances are counted from one",
+      PROBE_DEVICE + """    temperature:
+      name: X
+      index: 0
+""", ANY)
+
+check("R26 an index past the last countable instance is refused",
+      PROBE_DEVICE + """    temperature:
+      name: X
+      index: 13
+""", ANY)
+
+# Every type at once, generated from the same table the benches use. It fails on
+# a row whose schema cannot be built at all - which is not hypothetical: passing
+# entity_category=None explicitly rather than leaving it out made esphome
+# validate None as a string, and only a config run says so.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sensor_type_vectors import BINARY_VECTORS, VECTORS  # noqa: E402
+
+# dict.fromkeys, not set: several ids share a key, and a YAML mapping may not
+# repeat one.
+SENSOR_KEYS = list(dict.fromkeys(key for key, *_ in VECTORS))
+BINARY_KEYS = list(dict.fromkeys(key for key, *_ in BINARY_VECTORS))
+
+check(f"R27 all {len(SENSOR_KEYS)} mapped measurement types validate on one device",
+      PROBE_DEVICE + "".join(f'    {key}:\n      name: "P {key}"\n'
+                             for key in SENSOR_KEYS))
+
+check(f"R28 all {len(BINARY_KEYS)} binary types validate on one device",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+binary_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+""" + "".join(f'    {key}:\n      name: "B {key}"\n' for key in BINARY_KEYS))
+
+check("R30 text and raw validate, including a second instance",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+text_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+    device_name:
+      name: N
+    text:
+      name: T
+    raw:
+      name: R
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+    text:
+      name: T2
+      index: 2
+""")
+
+check("R31 a text key the component does not map is refused",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+text_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+    comment:
+      name: X
+""", ANY)
+
+check("R29 a binary type the component does not map is refused",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+binary_sensor:
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: r1
+    tilt:
+      name: X
+""", ANY)
+
 print("\n--- summary ---")
 for name, ok, detail in results:
     print(f"{'PASS' if ok else 'FAIL'}  {name}")
