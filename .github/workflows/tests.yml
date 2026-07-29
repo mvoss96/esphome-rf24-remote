@@ -39,6 +39,13 @@ jobs:
         run: python tests/test_sensor_types.py
       - name: Device logic
         run: python tests/test_device_logic.py
+      - name: The lab configurations still validate
+        # Neither is built in CI - one wants a WT32-ETH01 on the network, the
+        # other is flashed by hand per measurement - so without this they rot
+        # unnoticed until someone tries to flash one.
+        run: |
+          esphome config tests/wt32-eth01.yaml >/dev/null
+          esphome config tests/throughput.yaml >/dev/null
 
   compile:
     name: compile for esp32-c3
