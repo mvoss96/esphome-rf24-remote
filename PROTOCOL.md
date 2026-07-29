@@ -5,10 +5,10 @@ Radio protocol used by the nRF24L01-based remotes (`RF-RotRemote`) to control th
 implemented by the deployed devices, so a new receiver (e.g. an ESPHome component)
 can stay 100% compatible without re-flashing the remotes.
 
-> **Status:** this document describes the *legacy* protocols. The successor
-> wire format (BTHome v2 payloads over an nRF24 broadcast address, 4-byte
-> sender ID prefix) is implemented and documented in
-> `C:\Repos\active\RotRemote_BTHome`.
+> **Status:** this document describes the *legacy* protocols, which the
+> `nrf24_bthome` component does not speak. The wire format in use - BTHome v2
+> payloads behind a 4-byte sender id, broadcast NO_ACK to a shared address, in
+> a fixed 32-byte slot padded with `0xFF` - is described in the README.
 
 Source of truth:
 

@@ -36,6 +36,12 @@ ethernet:
 # and the radio's frame-level logging is the point of this build.
 logger:
   level: VERBOSE
+  # No serial port: this board is only ever reached over Ethernet, and at 115200
+  # baud a VERBOSE line per frame is milliseconds of blocking write inside the
+  # loop - far more than the 1.3 ms a 32-byte frame takes on the air at 250 kbps.
+  # Measured: with the UART on, fast traffic loses frames the radio had already
+  # received and the receiver had nowhere to put.
+  baud_rate: 0
 
 api:
 
@@ -119,6 +125,14 @@ nrf24_bthome:
       sender_id: "AA:01:00:03"
       timeout: 30s  # broadcasts every 5 s
 
+    # Every mapped sensor type at once, played by dongle A. Nothing sends to it
+    # outside the bench, hence the long timeout - it exists so each row of the
+    # SENSOR_TYPES table has an entity to publish into, and the log then says
+    # what value, unit and accuracy that row produced.
+    - id: type_probe
+      sender_id: "AA:01:00:04"
+      timeout: 1h
+
     - id: dongle_b
       sender_id: "AA:01:00:02"
       timeout: 15s
@@ -180,16 +194,180 @@ sensor:
     voltage:
       name: "B Voltage"
       internal: true
-  # Everything the component can map from this node. It also sends temperature
-  # and humidity, for which there is no option here at all - that is the gap.
   - platform: nrf24_bthome
     nrf24_bthome_device_id: sensor_node
     battery:
       name: "Sensor Node Battery"
     voltage:
       name: "Sensor Node Voltage"
+    temperature:
+      name: "Sensor Node Temperature"
+    humidity:
+      name: "Sensor Node Humidity"
     last_seen:
       name: "Sensor Node Last Seen"
+
+  # Every mapped measurement at once. The entity name is the YAML key verbatim so
+  # the radio bench can derive it from the same table it takes its vectors from -
+  # a renamed entity would otherwise quietly stop being checked. All internal:
+  # these exist to be read off the log, not to appear in Home Assistant.
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: type_probe
+    battery:
+      name: "P battery"
+      internal: true
+    temperature:
+      name: "P temperature"
+      internal: true
+    humidity:
+      name: "P humidity"
+      internal: true
+    pressure:
+      name: "P pressure"
+      internal: true
+    illuminance:
+      name: "P illuminance"
+      internal: true
+    mass:
+      name: "P mass"
+      internal: true
+    mass_lb:
+      name: "P mass_lb"
+      internal: true
+    dewpoint:
+      name: "P dewpoint"
+      internal: true
+    count:
+      name: "P count"
+      internal: true
+    energy:
+      name: "P energy"
+      internal: true
+    power:
+      name: "P power"
+      internal: true
+    voltage:
+      name: "P voltage"
+      internal: true
+    pm2_5:
+      name: "P pm2_5"
+      internal: true
+    pm10:
+      name: "P pm10"
+      internal: true
+    co2:
+      name: "P co2"
+      internal: true
+    tvoc:
+      name: "P tvoc"
+      internal: true
+    moisture:
+      name: "P moisture"
+      internal: true
+    humidity_u8:
+      name: "P humidity_u8"
+      internal: true
+    moisture_u8:
+      name: "P moisture_u8"
+      internal: true
+    rotation:
+      name: "P rotation"
+      internal: true
+    distance_mm:
+      name: "P distance_mm"
+      internal: true
+    distance_m:
+      name: "P distance_m"
+      internal: true
+    duration:
+      name: "P duration"
+      internal: true
+    current:
+      name: "P current"
+      internal: true
+    speed:
+      name: "P speed"
+      internal: true
+    temperature_c1:
+      name: "P temperature_c1"
+      internal: true
+    uv_index:
+      name: "P uv_index"
+      internal: true
+    volume:
+      name: "P volume"
+      internal: true
+    volume_ml:
+      name: "P volume_ml"
+      internal: true
+    volume_flow_rate:
+      name: "P volume_flow_rate"
+      internal: true
+    voltage_centi:
+      name: "P voltage_centi"
+      internal: true
+    gas:
+      name: "P gas"
+      internal: true
+    volume_u32:
+      name: "P volume_u32"
+      internal: true
+    water:
+      name: "P water"
+      internal: true
+    timestamp:
+      name: "P timestamp"
+      internal: true
+    acceleration:
+      name: "P acceleration"
+      internal: true
+    gyroscope:
+      name: "P gyroscope"
+      internal: true
+    volume_storage:
+      name: "P volume_storage"
+      internal: true
+    conductivity:
+      name: "P conductivity"
+      internal: true
+    temperature_s8:
+      name: "P temperature_s8"
+      internal: true
+    temperature_s8_035:
+      name: "P temperature_s8_035"
+      internal: true
+    direction:
+      name: "P direction"
+      internal: true
+    precipitation:
+      name: "P precipitation"
+      internal: true
+    channel:
+      name: "P channel"
+      internal: true
+    rotational_speed:
+      name: "P rotational_speed"
+      internal: true
+    speed_s32:
+      name: "P speed_s32"
+      internal: true
+    acceleration_s32:
+      name: "P acceleration_s32"
+      internal: true
+    light_level:
+      name: "P light_level"
+      internal: true
+    settings_revision:
+      name: "P settings_revision"
+      internal: true
+  # A second sensor for the same object id: index 2 takes the second
+  # temperature in a payload, which needs its own platform entry.
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: type_probe
+    temperature:
+      name: "P temperature 2"
+      index: 2
+      internal: true
 
 binary_sensor:
   - platform: nrf24_bthome
@@ -213,6 +391,94 @@ binary_sensor:
       name: "B Connected"
       internal: true
 
+  # Every binary object, same naming rule as the measurements above.
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: type_probe
+    generic:
+      name: "B generic"
+      internal: true
+    power:
+      name: "B power"
+      internal: true
+    opening:
+      name: "B opening"
+      internal: true
+    battery_low:
+      name: "B battery_low"
+      internal: true
+    battery_charging:
+      name: "B battery_charging"
+      internal: true
+    carbon_monoxide:
+      name: "B carbon_monoxide"
+      internal: true
+    cold:
+      name: "B cold"
+      internal: true
+    connectivity:
+      name: "B connectivity"
+      internal: true
+    door:
+      name: "B door"
+      internal: true
+    garage_door:
+      name: "B garage_door"
+      internal: true
+    gas:
+      name: "B gas"
+      internal: true
+    heat:
+      name: "B heat"
+      internal: true
+    light:
+      name: "B light"
+      internal: true
+    lock:
+      name: "B lock"
+      internal: true
+    moisture:
+      name: "B moisture"
+      internal: true
+    motion:
+      name: "B motion"
+      internal: true
+    moving:
+      name: "B moving"
+      internal: true
+    occupancy:
+      name: "B occupancy"
+      internal: true
+    plug:
+      name: "B plug"
+      internal: true
+    presence:
+      name: "B presence"
+      internal: true
+    problem:
+      name: "B problem"
+      internal: true
+    running:
+      name: "B running"
+      internal: true
+    safety:
+      name: "B safety"
+      internal: true
+    smoke:
+      name: "B smoke"
+      internal: true
+    sound:
+      name: "B sound"
+      internal: true
+    tamper:
+      name: "B tamper"
+      internal: true
+    vibration:
+      name: "B vibration"
+      internal: true
+    window:
+      name: "B window"
+      internal: true
+
 text_sensor:
   - platform: ethernet_info
     ip_address:
@@ -229,3 +495,26 @@ text_sensor:
       name: "Remote 1 Firmware"
     sender_id:
       name: "Remote 1 Sender ID"
+  # The two variable-length objects, plus a second text instance. Same naming
+  # rule as the other probe entities. device_name is the first text object under
+  # the name senders use 0x53 for, so it is fed by the same frames as `text`.
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: type_probe
+    text:
+      name: "P text"
+      internal: true
+    raw:
+      name: "P raw"
+      internal: true
+    device_name:
+      name: "P device_name"
+      internal: true
+    firmware_version:
+      name: "P firmware_version"
+      internal: true
+  - platform: nrf24_bthome
+    nrf24_bthome_device_id: type_probe
+    text:
+      name: "P text 2"
+      index: 2
+      internal: true
