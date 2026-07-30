@@ -5,6 +5,13 @@
 #include "esphome/core/defines.h"
 #include "esphome/core/hal.h"
 #include "esphome/components/nrf24/nrf24.h"
+#ifdef USE_BTHOME_ENCRYPTION
+// Pulled in only when a device actually carries an encryption_key: the backend
+// header includes mbedtls, and a receiver that decrypts nothing has no business
+// linking a cipher in.
+#include "bthome_crypto_mbedtls.h"
+#include "bthome_encryption.h"
+#endif
 #ifdef USE_SENSOR
 #include "esphome/components/sensor/sensor.h"
 #endif
@@ -72,7 +79,22 @@ class NRF24BTHomeDevice {
 
   // Called by the hub with the service-data part of a frame (after the
   // sender ID matched). Returns false if the packet was a dedup repeat.
-  bool handle_service_data(const uint8_t *data, size_t len);
+  // `padded` says the frame came off a pipe with a fixed payload size, so its
+  // tail may be 0xFF filler rather than data - which only an encrypted payload
+  // has to act on, see decrypt_().
+  bool handle_service_data(const uint8_t *data, size_t len, bool padded);
+
+#ifdef USE_BTHOME_ENCRYPTION
+  // The BTHome v2 bindkey, 16 bytes - the same value Home Assistant asks for
+  // when adding an encrypted BTHome device. Setting it makes encryption
+  // mandatory for this sender: a plaintext payload is refused afterwards,
+  // because a receiver that accepts both offers an attacker the plaintext one.
+  void set_encryption_key(const std::vector<uint8_t> &key);
+  // The six MAC bytes that go into the CCM nonce. BTHome borrows them from the
+  // BLE advertiser address, which this transport does not have - see the
+  // component's Python for what stands in for it.
+  void set_nonce_mac(const std::vector<uint8_t> &mac);
+#endif
 
 #ifdef USE_SENSOR
   // Every measurement sensor is registered the same way, battery and voltage
@@ -166,6 +188,37 @@ class NRF24BTHomeDevice {
     uint32_t firmware{0};
   };
   void commit_(const Pending &pending);
+
+#ifdef USE_BTHOME_ENCRYPTION
+  // What one decryption attempt came to. The counter is carried out because the
+  // caller has to tell two rejections apart that arrive as the same status: an
+  // unchanged counter is the sender's own repeat and expected, a lower one means
+  // the sender restarted its counter and needs saying out loud.
+  struct DecryptResult {
+    BTHome::DecryptStatus status{BTHome::DecryptStatus::BadBuffer};
+    size_t plain_len{0};  // bytes written to `out`; meaningful only on Ok
+    uint32_t counter{0};  // the counter the rejected/accepted payload carried
+  };
+  DecryptResult decrypt_(const uint8_t *data, size_t len, bool padded, uint8_t *out,
+                         size_t out_capacity);
+  void report_decrypt_failure_(const DecryptResult &result);
+
+  // One instance per sender: bindkey, nonce MAC and replay counter all belong to
+  // one device, and sharing any of them between two would break the nonce.
+  BTHome::Decryptor decryptor_{&BTHome::mbedtls_ccm_decrypt_backend};
+  bool encrypted_{false};
+  // A wrong bindkey is a standing misconfiguration, and the sender broadcasts
+  // every frame a few times - without this it writes a warning per copy, for as
+  // long as the remote is in use. Cleared again by the next payload that does
+  // decrypt, so a fault that comes back is reported again rather than swallowed.
+  //
+  // Held per reason rather than as one flag: a device already quiet about a
+  // wrong key would otherwise say nothing when the failure turns into plaintext
+  // payloads arriving, which is a different event entirely - one is a
+  // misconfiguration, the other is someone trying the transport without the key.
+  bool warned_decrypt_{false};
+  BTHome::DecryptStatus warned_status_{BTHome::DecryptStatus::Ok};
+#endif
 
   std::array<uint8_t, 4> sender_id_{{0, 0, 0, 0}};
   char sender_id_text_[12]{"00:00:00:00"};

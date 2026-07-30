@@ -253,6 +253,62 @@ sensor:
       name: B
 """, ANY)
 
+# ---- encryption -------------------------------------------------------------
+# The key is the one value here that cannot be checked at runtime: a wrong one
+# does not fail, it simply decrypts nothing, and the receiver reports a sender
+# that has gone quiet. So the format is pinned at config time.
+check("R32 an encryption key of the wrong length is refused",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+      encryption_key: "231d39c1d7cc1ab1"
+""", "32 hexadecimal characters")
+
+check("R33 a non-hex encryption key is refused",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+      encryption_key: "231d39c1d7cc1ab1aee224cd096db9zz"
+""", "32 hexadecimal characters")
+
+# It only feeds the nonce, so on its own it changes nothing - and silently
+# doing nothing is exactly what a security option must not do.
+check("R34 a mac_address without an encryption key is refused",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+      mac_address: "AA:BB:CC:DD:EE:FF"
+""", "does nothing without an encryption_key")
+
+check("R35 a five-byte mac_address is refused",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+      encryption_key: "231d39c1d7cc1ab1aee224cd096db932"
+      mac_address: "AA:BB:CC:DD:EE"
+""", "mac_address must have 6 bytes")
+
+check("R36 an encrypted device validates, with and without a mac_address",
+      GOOD_HUB + """
+nrf24_bthome:
+  devices:
+    - id: r1
+      sender_id: "B7:4F:E7:7F"
+      encryption_key: "231d39c1d7cc1ab1aee224cd096db932"
+    - id: r2
+      sender_id: "B7:4F:E7:80"
+      encryption_key: "231D39C1D7CC1AB1AEE224CD096DB932"
+      mac_address: "AA:BB:CC:DD:EE:FF"
+""")
+
 # ---- the combinations that must be accepted ---------------------------------
 check("R19 the migration configuration validates (dynamic + fixed side by side)",
       GOOD_HUB + """

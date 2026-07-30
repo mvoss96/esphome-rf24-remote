@@ -28,6 +28,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install esphome
+      # The device-logic harness decrypts with mbedtls, the same backend the
+      # firmware uses, and builds its encrypted test frames with a third
+      # implementation so the two are never just agreeing with each other.
+      - name: Encryption dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmbedtls-dev
+          pip install cryptography
       - name: Config rules
         run: python tests/validate_config_rules.py
       # The three that build C++ take the library at the version
