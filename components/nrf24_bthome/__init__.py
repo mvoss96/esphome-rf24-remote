@@ -26,7 +26,7 @@ CONF_ON_DIMMER = "on_dimmer"
 CONF_ENCRYPTION_KEY = "encryption_key"
 CONF_MAC_ADDRESS = "mac_address"
 
-BTHOME_CPP_VERSION = "0.4.2"  # PlatformIO registry: mvoss96/bthome-cpp
+BTHOME_CPP_VERSION = "0.5.0"  # PlatformIO registry: mvoss96/bthome-cpp
 
 
 def _sender_id(value):
