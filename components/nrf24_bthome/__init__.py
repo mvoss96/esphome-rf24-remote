@@ -24,7 +24,7 @@ CONF_SENDER_ID = "sender_id"
 CONF_ON_BUTTON = "on_button"
 CONF_ON_DIMMER = "on_dimmer"
 
-BTHOME_CPP_VERSION = "0.4.2"  # PlatformIO registry: mvoss96/bthome-cpp
+BTHOME_CPP_VERSION = "0.5.0"  # PlatformIO registry: mvoss96/bthome-cpp
 
 
 def _sender_id(value):
