@@ -76,6 +76,14 @@ class NRF24BTHomeDevice {
   void add_dimmer_trigger(Trigger<uint8_t, int> *trigger) {
     this->dimmer_triggers_.push_back(trigger);
   }
+  // BTHome's command object (0x3B) says what the receiver should do rather than
+  // what happened at the sender - "toggle", "step_up 3". Not instanced the way
+  // buttons and dimmers are: several command objects in one payload are a
+  // sequence of instructions, not instructions for different inputs, so the
+  // trigger carries the opcode and its argument instead of an index.
+  void add_command_trigger(Trigger<std::string, int> *trigger) {
+    this->command_triggers_.push_back(trigger);
+  }
 
   // Called by the hub with the service-data part of a frame (after the
   // sender ID matched). Returns false if the packet was a dedup repeat.
@@ -176,6 +184,12 @@ class NRF24BTHomeDevice {
     uint8_t dimmer_events[MAX_EVENTS];
     uint8_t dimmer_steps[MAX_EVENTS];
     uint8_t dimmer_count{0};
+    // Command opcodes in payload order, with the first argument of each -
+    // step_up and step_down carry a step count, the rest carry none and leave
+    // it at zero.
+    uint8_t command_opcodes[MAX_EVENTS];
+    uint8_t command_args[MAX_EVENTS];
+    uint8_t command_count{0};
     bool overflow{false};  // more event objects than MAX_EVENTS
 
     int16_t packet_id{-1};  // -1 = the payload carried none
@@ -229,6 +243,7 @@ class NRF24BTHomeDevice {
   bool ever_seen_{false};
   std::vector<Trigger<uint8_t, std::string> *> button_triggers_;
   std::vector<Trigger<uint8_t, int> *> dimmer_triggers_;
+  std::vector<Trigger<std::string, int> *> command_triggers_;
 #ifdef USE_SENSOR
   // The value carried by the current payload is parked in the slot itself
   // rather than in Pending: one payload is processed at a time, and this keeps
@@ -283,6 +298,11 @@ class ButtonTrigger : public Trigger<uint8_t, std::string> {
 class DimmerTrigger : public Trigger<uint8_t, int> {
  public:
   explicit DimmerTrigger(NRF24BTHomeDevice *device) { device->add_dimmer_trigger(this); }
+};
+
+class CommandTrigger : public Trigger<std::string, int> {
+ public:
+  explicit CommandTrigger(NRF24BTHomeDevice *device) { device->add_command_trigger(this); }
 };
 
 }  // namespace nrf24_bthome

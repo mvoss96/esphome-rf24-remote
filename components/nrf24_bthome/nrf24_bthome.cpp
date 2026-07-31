@@ -280,6 +280,23 @@ static std::string button_event_name(uint8_t code) {
   }
 }
 
+static std::string command_event_name(uint8_t opcode) {
+  switch (static_cast<BTHome::CommandEventType>(opcode)) {
+    case BTHome::CommandEventType::Off:
+      return "off";
+    case BTHome::CommandEventType::On:
+      return "on";
+    case BTHome::CommandEventType::Toggle:
+      return "toggle";
+    case BTHome::CommandEventType::StepUp:
+      return "step_up";
+    case BTHome::CommandEventType::StepDown:
+      return "step_down";
+    default:
+      return "unknown";
+  }
+}
+
 bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, bool padded) {
 #ifdef USE_BTHOME_ENCRYPTION
   // Holds the plaintext for as long as the payload is being read. Everything
@@ -397,6 +414,19 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
         }
         break;
       }
+      case BTHome::ObjectKind::CommandEvent: {
+        if (pending.command_count < MAX_EVENTS) {
+          // The decoder packs [opcode][first argument] the way the dimmer
+          // object's two wire bytes already land, so event() and steps() read
+          // it. Commands without an argument leave steps() at zero.
+          pending.command_opcodes[pending.command_count] = obj.event();
+          pending.command_args[pending.command_count] = obj.steps();
+          pending.command_count++;
+        } else {
+          pending.overflow = true;
+        }
+        break;
+      }
       case BTHome::ObjectKind::Sensor: {
         const uint8_t instance = instance_of(obj.object_id);
         ESP_LOGV(TAG, "%s: sensor 0x%02X#%u: %.3f", this->sender_id_text_, obj.object_id,
@@ -500,7 +530,8 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
   // nothing by which a repeat can be told from a new press. Measured on the
   // bench: three copies of one frame, three button events. Said once per
   // device; the sender will not start including one halfway through.
-  if (pending.packet_id < 0 && (pending.button_count > 0 || pending.dimmer_count > 0) &&
+  if (pending.packet_id < 0 &&
+      (pending.button_count > 0 || pending.dimmer_count > 0 || pending.command_count > 0) &&
       !this->warned_no_packet_id_) {
     this->warned_no_packet_id_ = true;
     ESP_LOGW(TAG,
@@ -548,6 +579,17 @@ void NRF24BTHomeDevice::commit_(const Pending &pending) {
              static_cast<unsigned>(i + 1), steps);
     for (auto *trigger : this->dimmer_triggers_) {
       trigger->trigger(i + 1, steps);
+    }
+  }
+
+  // Commands fire in payload order and are not indexed: unlike a button, a
+  // second command object is the next instruction rather than a second input.
+  for (uint8_t i = 0; i < pending.command_count; i++) {
+    const std::string name = command_event_name(pending.command_opcodes[i]);
+    const int steps = static_cast<int>(pending.command_args[i]);
+    ESP_LOGD(TAG, "%s: command %s (%d)", this->sender_id_text_, name.c_str(), steps);
+    for (auto *trigger : this->command_triggers_) {
+      trigger->trigger(name, steps);
     }
   }
 
@@ -692,9 +734,10 @@ void NRF24BTHomeDevice::dump_config() const {
   // this is where one can see which of the two is configured.
   ESP_LOGCONFIG(TAG, "    Encryption: %s", this->encrypted_ ? "AES-128-CCM" : "none");
 #endif
-  ESP_LOGCONFIG(TAG, "    Triggers: %u on_button, %u on_dimmer",
+  ESP_LOGCONFIG(TAG, "    Triggers: %u on_button, %u on_dimmer, %u on_command",
                 static_cast<unsigned>(this->button_triggers_.size()),
-                static_cast<unsigned>(this->dimmer_triggers_.size()));
+                static_cast<unsigned>(this->dimmer_triggers_.size()),
+                static_cast<unsigned>(this->command_triggers_.size()));
 }
 
 void NRF24BTHomeHub::dump_config() {

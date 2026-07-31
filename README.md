@@ -184,7 +184,27 @@ nrf24_bthome:
         - light.dim_relative:
             id: my_light
             relative_brightness: !lambda return steps * 0.03;
+      on_command:
+        # args: command (std::string: off, on, toggle, step_up,
+        # step_down), steps (int, the opcode's argument; 0 for the
+        # opcodes that take none). Unsigned - the direction is in the
+        # opcode, not in the number.
+        - logger.log:
+            format: "command %s (%d)"
+            args: [command.c_str(), steps]
 ```
+
+`on_button` and `on_dimmer` report what happened at the remote and leave the
+meaning to the receiver; `on_command` carries BTHome's command object (0x3B),
+which says what the receiver should do. Which of the two a remote sends is the
+remote's design decision — a knob that reports rotation suits a receiver that
+decides what rotation means, a two-button remote wired to one lamp may as well
+say `step_up` and be done. The specification advises sending commands only in
+encrypted payloads, since an unencrypted one can be observed and replayed by
+anyone in range.
+
+Unlike buttons and dimmers, commands carry no instance index: a second command
+object in a payload is the next instruction, not a second input.
 
 Frames from sender IDs without a `devices` entry are logged at DEBUG and
 ignored — pairing a remote to a lamp is purely a YAML decision.

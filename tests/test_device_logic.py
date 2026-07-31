@@ -147,16 +147,35 @@ CASES = [
      # A lone None fires nothing at all - it is a placeholder, not an event.
      [r"TRIGGER A dimmer 1 0$"]),
 
-    # --- the objects the component passes over --------------------------------
-    ("a command event is stepped over, whatever its argument count",
+    # --- command events -------------------------------------------------------
+    # 3B0002 and 3B010305 are the specification's own worked examples, kept
+    # verbatim so a change here has to disagree with the spec to pass.
+    ("command opcodes and their argument",
+     [frame(A, pid() + "3B0002"), frame(A, pid() + "3B010305"),
+      frame(A, pid() + "3B010403"), frame(A, pid() + "3B0000"),
+      frame(A, pid() + "3B0001")],
+     [r"TRIGGER A command toggle 0$", r"TRIGGER A command step_up 5$",
+      r"TRIGGER A command step_down 3$", r"TRIGGER A command off 0$",
+      r"TRIGGER A command on 0$"],
+     # Not a button and not a dimmer: a command has no instance index, so
+     # nothing here may arrive on those triggers.
+     [r"TRIGGER A button ", r"TRIGGER A dimmer "]),
+
+    ("a command's length is its own argument count",
      [frame(A, pid() + "01503B027F0102" + "0C800D"),
       frame(A, pid() + "3B017F05" + "3A01"),
       frame(A, pid() + "3B007F" + "029C09")],
      [r"PUBLISH A.battery 80", r"PUBLISH A.voltage 3.456",
-      r"TRIGGER A button 1 press$", r"PUBLISH A.temperature 24.6"],
+      r"TRIGGER A button 1 press$", r"PUBLISH A.temperature 24.6",
+      # An opcode this version does not know still fires and still names its
+      # argument - the alternative is a silent drop.
+      r"TRIGGER A command unknown 1$", r"TRIGGER A command unknown 5$",
+      r"TRIGGER A command unknown 0$"],
      # Its length is its own argument count, so a wrong reading would shift the
      # rest of the payload and show up as a malformed frame.
      [r"malformed BTHome payload"]),
+
+    # --- the objects the component passes over --------------------------------
 
     ("an encrypted payload is refused, nothing is published",
      [frame(A, pid() + "01503A01", header=HDR_ENCRYPTED)],
@@ -385,11 +404,11 @@ CASES.append(
       r"LOG C   Device: AA:01:00:01",
       r"LOG C     Timeout: 15000 ms",
       r"LOG C     Entities: 5 sensor, 2 binary sensor, 6 text sensor",
-      r"LOG C     Triggers: 1 on_button, 1 on_dimmer",
+      r"LOG C     Triggers: 1 on_button, 1 on_dimmer, 1 on_command",
       r"LOG C     Encryption: none",
       r"LOG C   Device: AA:01:00:02",
       r"LOG C     Entities: 1 sensor, 1 binary sensor, 0 text sensor",
-      r"LOG C     Triggers: 1 on_button, 0 on_dimmer",
+      r"LOG C     Triggers: 1 on_button, 0 on_dimmer, 0 on_command",
       # Which of the two a device is set up for, because getting it wrong looks
       # from the outside exactly like a radio that has stopped receiving.
       r"LOG C   Device: AA:01:00:03",

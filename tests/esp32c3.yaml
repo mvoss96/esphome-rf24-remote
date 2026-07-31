@@ -93,6 +93,25 @@ nrf24_bthome:
                   const float ct = id(test_led).remote_values.get_color_temperature();
                   call.set_color_temperature(clamp(ct + steps * 15.0f, 153.0f, 370.0f));
                   call.perform();
+      # Here so CI compiles the command path too, and so the codegen's argument
+      # names stay honest - a rename would break this build rather than pass.
+      on_command:
+        - logger.log:
+            format: "command %s (%d)"
+            args: [command.c_str(), steps]
+        - if:
+            condition:
+              lambda: return command == "toggle";
+            then:
+              - light.toggle: test_led
+        - if:
+            condition:
+              lambda: return command == "step_up" || command == "step_down";
+            then:
+              - light.dim_relative:
+                  id: test_led
+                  relative_brightness: !lambda |-
+                    return (command == "step_up" ? steps : -steps) * 0.05f;
     # A second remote whose payloads are encrypted. Here so this job compiles the
     # decryption path at all: the define that pulls mbedtls in is only emitted
     # when some device carries a key, so without one nothing of it is built and
