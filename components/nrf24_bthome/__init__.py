@@ -17,12 +17,18 @@ ButtonTrigger = nrf24_bthome_ns.class_(
 DimmerTrigger = nrf24_bthome_ns.class_(
     "DimmerTrigger", automation.Trigger.template(cg.uint8, cg.int_)
 )
+# No instance index: a second command object in a payload is the next
+# instruction, not a second input. See add_command_trigger().
+CommandTrigger = nrf24_bthome_ns.class_(
+    "CommandTrigger", automation.Trigger.template(cg.std_string, cg.int_)
+)
 
 CONF_NRF24_ID = "nrf24_id"
 CONF_DEVICES = "devices"
 CONF_SENDER_ID = "sender_id"
 CONF_ON_BUTTON = "on_button"
 CONF_ON_DIMMER = "on_dimmer"
+CONF_ON_COMMAND = "on_command"
 CONF_ENCRYPTION_KEY = "encryption_key"
 CONF_MAC_ADDRESS = "mac_address"
 
@@ -83,6 +89,9 @@ DEVICE_SCHEMA = cv.All(
             ),
             cv.Optional(CONF_ON_DIMMER): automation.validate_automation(
                 {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DimmerTrigger)}
+            ),
+            cv.Optional(CONF_ON_COMMAND): automation.validate_automation(
+                {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(CommandTrigger)}
             ),
         }
     ),
@@ -148,6 +157,17 @@ async def to_code(config):
             await automation.build_automation(
                 trigger,
                 [(cg.uint8, "dimmer"), (cg.int_, "steps")],
+                trigger_config,
+            )
+
+        for trigger_config in device_config.get(CONF_ON_COMMAND, []):
+            trigger = cg.new_Pvariable(trigger_config[CONF_TRIGGER_ID], device)
+            await automation.build_automation(
+                trigger,
+                # `command` is the opcode name - off, on, toggle, step_up,
+                # step_down - and `steps` its argument, 0 for the opcodes that
+                # take none. Unsigned: the direction is in the opcode.
+                [(cg.std_string, "command"), (cg.int_, "steps")],
                 trigger_config,
             )
 

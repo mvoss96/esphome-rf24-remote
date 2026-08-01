@@ -184,7 +184,42 @@ nrf24_bthome:
         - light.dim_relative:
             id: my_light
             relative_brightness: !lambda return steps * 0.03;
+      on_command:
+        # args: command (std::string: off, on, toggle, step_up,
+        # step_down), steps (int, the opcode's argument; 0 for the
+        # opcodes that take none). Unsigned - the direction is in the
+        # opcode, not in the number.
+        - logger.log:
+            format: "command %s (%d)"
+            args: [command.c_str(), steps]
 ```
+
+`on_button` and `on_dimmer` report what happened at the remote and leave the
+meaning to the receiver; `on_command` carries BTHome's command object (0x3B),
+which says what the receiver should do. Which of the two a remote sends is the
+remote's design decision — a knob that reports rotation suits a receiver that
+decides what rotation means, a two-button remote wired to one lamp may as well
+say `step_up` and be done. The specification advises sending commands only in
+encrypted payloads, since an unencrypted one can be observed and replayed by
+anyone in range.
+
+Every button, dimmer and command a registered sender broadcasts is logged at
+DEBUG whether or not a trigger picks it up, an opcode this version does not
+know included — so what a remote sends is visible before anything is wired to
+it. Measurements are quieter, because battery and voltage ride along in every
+frame: their values need `logger: level: VERBOSE`. What DEBUG does say, once
+per object and then never again, is that a value arrived with nowhere to go:
+
+```
+AA:01:00:01: object 0x03#1 (humidity) has no entity configured for it
+```
+
+`humidity` there is the key you would write under `sensor:` — the name comes
+from the same table the configuration schema is built from, so a name in that
+line is a name that works in a config.
+
+Unlike buttons and dimmers, commands carry no instance index: a second command
+object in a payload is the next instruction, not a second input.
 
 Frames from sender IDs without a `devices` entry are logged at DEBUG and
 ignored — pairing a remote to a lamp is purely a YAML decision.

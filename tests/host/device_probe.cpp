@@ -31,6 +31,7 @@
 
 using esphome::binary_sensor::BinarySensor;
 using esphome::nrf24_bthome::ButtonTrigger;
+using esphome::nrf24_bthome::CommandTrigger;
 using esphome::nrf24_bthome::DimmerTrigger;
 using esphome::nrf24_bthome::NRF24BTHomeDevice;
 using esphome::nrf24_bthome::NRF24BTHomeHub;
@@ -62,6 +63,19 @@ class WatchingDimmer : public DimmerTrigger {
   void trigger(uint8_t dimmer, int steps) override {
     std::printf("TRIGGER %s dimmer %u %d\n", this->label_.c_str(),
                 static_cast<unsigned>(dimmer), steps);
+    std::fflush(stdout);
+  }
+
+ private:
+  std::string label_;
+};
+
+class WatchingCommand : public CommandTrigger {
+ public:
+  WatchingCommand(NRF24BTHomeDevice *device, std::string label)
+      : CommandTrigger(device), label_(std::move(label)) {}
+  void trigger(std::string command, int steps) override {
+    std::printf("TRIGGER %s command %s %d\n", this->label_.c_str(), command.c_str(), steps);
     std::fflush(stdout);
   }
 
@@ -116,6 +130,7 @@ int main() {
 
   WatchingButton a_button(&a, "A");
   WatchingDimmer a_dimmer(&a, "A");
+  WatchingCommand a_command(&a, "A");
 
   // Device B exists so attribution is testable: an event on one sender must not
   // appear on the other, and each keeps its own dedup state.

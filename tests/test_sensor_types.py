@@ -198,6 +198,48 @@ def verdict(name, ok, detail):
     print(f"{'PASS' if ok else 'FAIL'}  {name}\n      {detail}", flush=True)
 
 
+def check_object_names(sensors, binaries):
+    """object_names.h against the tables it was generated from.
+
+    The header exists so one log line can say "humidity" instead of "0x03", and
+    it is only worth having if the name is the key a config would actually use.
+    That holds exactly as long as it matches these two tables, and nothing in a
+    build would notice if it stopped - hence here.
+    """
+    expected = {}
+    for key, entry in sensors.items():
+        ids = entry[0] if isinstance(entry[0], tuple) else (entry[0],)
+        for object_id in ids:
+            expected[object_id] = key
+    for key, entry in binaries.items():
+        expected[entry[0]] = key
+
+    text = (COMPONENT / "object_names.h").read_text(encoding="utf-8")
+    found = {
+        int(oid, 16): key
+        for oid, key in re.findall(r"\{(0x[0-9A-Fa-f]{2}), \"([a-z0-9_]+)\"\}", text)
+    }
+
+    missing = sorted(set(expected) - set(found))
+    extra = sorted(set(found) - set(expected))
+    wrong = sorted(o for o in set(expected) & set(found) if expected[o] != found[o])
+    faults = []
+    if missing:
+        faults.append("missing " + ", ".join(f"0x{o:02X}" for o in missing))
+    if extra:
+        faults.append("stale " + ", ".join(f"0x{o:02X}" for o in extra))
+    if wrong:
+        faults.append(
+            "renamed "
+            + ", ".join(f"0x{o:02X} {found[o]}->{expected[o]}" for o in wrong)
+        )
+    verdict(
+        f"V0b object_names.h covers all {len(expected)} configurable object ids",
+        not faults,
+        "; ".join(faults),
+    )
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", help="path to a bthome-cpp checkout to build against")
@@ -207,6 +249,7 @@ def main():
     version = pinned_version()
     sensors = parse_table("sensor.py", "SENSOR_TYPES")
     binaries = parse_table("binary_sensor.py", "BINARY_TYPES")
+    check_object_names(sensors, binaries)
     workdir = Path(tempfile.mkdtemp(prefix="bthome-types-"))
     print(f"component pins bthome-cpp {version}", flush=True)
 

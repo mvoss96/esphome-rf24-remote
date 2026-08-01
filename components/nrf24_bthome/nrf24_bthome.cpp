@@ -1,7 +1,10 @@
 #include "nrf24_bthome.h"
 #include "esphome/core/log.h"
 
+#include <algorithm>
+
 #include "bthome_decode.h"
+#include "object_names.h"
 
 namespace esphome {
 namespace nrf24_bthome {
@@ -280,6 +283,23 @@ static std::string button_event_name(uint8_t code) {
   }
 }
 
+static std::string command_event_name(uint8_t opcode) {
+  switch (static_cast<BTHome::CommandEventType>(opcode)) {
+    case BTHome::CommandEventType::Off:
+      return "off";
+    case BTHome::CommandEventType::On:
+      return "on";
+    case BTHome::CommandEventType::Toggle:
+      return "toggle";
+    case BTHome::CommandEventType::StepUp:
+      return "step_up";
+    case BTHome::CommandEventType::StepDown:
+      return "step_down";
+    default:
+      return "unknown";
+  }
+}
+
 bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, bool padded) {
 #ifdef USE_BTHOME_ENCRYPTION
   // Holds the plaintext for as long as the payload is being read. Everything
@@ -356,6 +376,18 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
     }
     return 1;
   };
+  // An object no configured entity took. Worth saying once, because from the
+  // outside it is indistinguishable from a sender that never sent it: the
+  // remote broadcasts a temperature, no sensor is set up for it, and nothing
+  // anywhere says the value was there for the taking. Recorded now and reported
+  // in commit_(), so the sender's repeats do not say it three times over.
+  auto note_unclaimed = [](Pending &p, uint8_t object_id, uint8_t instance, bool claimed) {
+    if (claimed || p.unclaimed_count >= MAX_EVENTS) {
+      return;
+    }
+    p.unclaimed[p.unclaimed_count++] =
+        static_cast<uint16_t>(object_id) << 8 | static_cast<uint16_t>(instance);
+  };
 #ifdef USE_SENSOR
   for (auto &slot : this->object_sensors_) {
     slot.has_pending = false;
@@ -397,18 +429,34 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
         }
         break;
       }
+      case BTHome::ObjectKind::CommandEvent: {
+        if (pending.command_count < MAX_EVENTS) {
+          // The decoder packs [opcode][first argument] the way the dimmer
+          // object's two wire bytes already land, so event() and steps() read
+          // it. Commands without an argument leave steps() at zero.
+          pending.command_opcodes[pending.command_count] = obj.event();
+          pending.command_args[pending.command_count] = obj.steps();
+          pending.command_count++;
+        } else {
+          pending.overflow = true;
+        }
+        break;
+      }
       case BTHome::ObjectKind::Sensor: {
         const uint8_t instance = instance_of(obj.object_id);
         ESP_LOGV(TAG, "%s: sensor 0x%02X#%u: %.3f", this->sender_id_text_, obj.object_id,
                  instance, obj.value);
+        bool claimed = false;
 #ifdef USE_SENSOR
         for (auto &slot : this->object_sensors_) {
           if (slot.object_id == obj.object_id && slot.index == instance) {
             slot.has_pending = true;
             slot.pending = obj.value;
+            claimed = true;
           }
         }
 #endif
+        note_unclaimed(pending, obj.object_id, instance, claimed);
         break;
       }
       case BTHome::ObjectKind::Binary: {
@@ -416,14 +464,17 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
         const bool state = obj.raw != 0;
         ESP_LOGV(TAG, "%s: binary 0x%02X#%u: %s", this->sender_id_text_, obj.object_id,
                  instance, state ? "on" : "off");
+        bool claimed = false;
 #ifdef USE_BINARY_SENSOR
         for (auto &slot : this->object_binary_sensors_) {
           if (slot.object_id == obj.object_id && slot.index == instance) {
             slot.has_pending = true;
             slot.pending = state;
+            claimed = true;
           }
         }
 #endif
+        note_unclaimed(pending, obj.object_id, instance, claimed);
         break;
       }
       case BTHome::ObjectKind::Text:
@@ -435,9 +486,13 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
                  static_cast<unsigned>(obj.length));
         // The device name is the first text object, which is what senders use
         // 0x53 for; further ones need a text_sensor of their own.
+        bool claimed = false;
         if (is_text && instance == 1) {
           pending.name = obj.bytes;
           pending.name_len = obj.length;
+          // Taken whether or not a name text sensor exists: it also feeds the
+          // device-name log line, so it is never an object nobody looked at.
+          claimed = true;
         }
 #ifdef USE_TEXT_SENSOR
         for (auto &slot : this->object_text_sensors_) {
@@ -445,9 +500,11 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
             slot.has_pending = true;
             slot.bytes = obj.bytes;
             slot.length = obj.length;
+            claimed = true;
           }
         }
 #endif
+        note_unclaimed(pending, obj.object_id, instance, claimed);
         break;
       }
       case BTHome::ObjectKind::DeviceTypeId: {
@@ -500,7 +557,8 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
   // nothing by which a repeat can be told from a new press. Measured on the
   // bench: three copies of one frame, three button events. Said once per
   // device; the sender will not start including one halfway through.
-  if (pending.packet_id < 0 && (pending.button_count > 0 || pending.dimmer_count > 0) &&
+  if (pending.packet_id < 0 &&
+      (pending.button_count > 0 || pending.dimmer_count > 0 || pending.command_count > 0) &&
       !this->warned_no_packet_id_) {
     this->warned_no_packet_id_ = true;
     ESP_LOGW(TAG,
@@ -548,6 +606,36 @@ void NRF24BTHomeDevice::commit_(const Pending &pending) {
              static_cast<unsigned>(i + 1), steps);
     for (auto *trigger : this->dimmer_triggers_) {
       trigger->trigger(i + 1, steps);
+    }
+  }
+
+  // Said once per object, at DEBUG rather than VERBOSE, because this is the
+  // line that turns "the remote sends nothing useful" into "the remote sends
+  // this and you have not asked for it". Once configured it falls silent; the
+  // per-object VERBOSE lines above remain for watching values go by.
+  for (uint8_t i = 0; i < pending.unclaimed_count; i++) {
+    const uint16_t key = pending.unclaimed[i];
+    if (std::find(this->reported_unclaimed_.begin(), this->reported_unclaimed_.end(), key) !=
+        this->reported_unclaimed_.end()) {
+      continue;
+    }
+    this->reported_unclaimed_.push_back(key);
+    const uint8_t object_id = static_cast<uint8_t>(key >> 8);
+    const char *name = object_type_name(object_id);
+    ESP_LOGD(TAG, "%s: object 0x%02X#%u (%s) has no entity configured for it",
+             this->sender_id_text_, static_cast<unsigned>(object_id),
+             static_cast<unsigned>(key & 0xFF),
+             name != nullptr ? name : "not mapped by this version");
+  }
+
+  // Commands fire in payload order and are not indexed: unlike a button, a
+  // second command object is the next instruction rather than a second input.
+  for (uint8_t i = 0; i < pending.command_count; i++) {
+    const std::string name = command_event_name(pending.command_opcodes[i]);
+    const int steps = static_cast<int>(pending.command_args[i]);
+    ESP_LOGD(TAG, "%s: command %s (%d)", this->sender_id_text_, name.c_str(), steps);
+    for (auto *trigger : this->command_triggers_) {
+      trigger->trigger(name, steps);
     }
   }
 
@@ -692,9 +780,10 @@ void NRF24BTHomeDevice::dump_config() const {
   // this is where one can see which of the two is configured.
   ESP_LOGCONFIG(TAG, "    Encryption: %s", this->encrypted_ ? "AES-128-CCM" : "none");
 #endif
-  ESP_LOGCONFIG(TAG, "    Triggers: %u on_button, %u on_dimmer",
+  ESP_LOGCONFIG(TAG, "    Triggers: %u on_button, %u on_dimmer, %u on_command",
                 static_cast<unsigned>(this->button_triggers_.size()),
-                static_cast<unsigned>(this->dimmer_triggers_.size()));
+                static_cast<unsigned>(this->dimmer_triggers_.size()),
+                static_cast<unsigned>(this->command_triggers_.size()));
 }
 
 void NRF24BTHomeHub::dump_config() {
