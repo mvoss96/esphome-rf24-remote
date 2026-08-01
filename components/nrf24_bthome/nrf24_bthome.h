@@ -190,6 +190,13 @@ class NRF24BTHomeDevice {
     uint8_t command_opcodes[MAX_EVENTS];
     uint8_t command_args[MAX_EVENTS];
     uint8_t command_count{0};
+    // Objects no configured entity took, as (object id << 8) | instance.
+    // Collected here rather than logged where they appear, because the sender
+    // broadcasts every frame three times and the repeats are only recognised
+    // after the whole payload has been read - saying it during the parse would
+    // say it three times.
+    uint16_t unclaimed[MAX_EVENTS];
+    uint8_t unclaimed_count{0};
     bool overflow{false};  // more event objects than MAX_EVENTS
 
     int16_t packet_id{-1};  // -1 = the payload carried none
@@ -238,6 +245,11 @@ class NRF24BTHomeDevice {
   char sender_id_text_[12]{"00:00:00:00"};
   int16_t last_packet_id_{-1};  // -1 = nothing received yet
   bool warned_no_packet_id_{false};
+  // Which unclaimed objects have already been named, so each is said once and
+  // not on every frame that carries it - the same reasoning as
+  // warned_no_packet_id_ above. Grows only with the number of distinct objects
+  // a sender broadcasts and nobody reads, which is a handful at most.
+  std::vector<uint16_t> reported_unclaimed_;
   uint32_t timeout_ms_{0};
   uint32_t last_contact_ms_{0};  // millis() of the last valid frame (repeats count)
   bool ever_seen_{false};

@@ -175,6 +175,19 @@ CASES = [
      # rest of the payload and show up as a malformed frame.
      [r"malformed BTHome payload"]),
 
+    # --- objects nobody asked for ---------------------------------------------
+    # Device A has sensors for 0x01, 0x02 (twice) and 0x0C, so 0x03 is a value
+    # the sender offers and the configuration never takes. Without this line the
+    # two cases are indistinguishable from outside: a remote that sends humidity
+    # nobody reads looks exactly like a remote that sends none.
+    ("an object with no entity is named once, however often it arrives",
+     [frame(A, pid() + "03BF13"), frame(A, pid() + "03BF13"),
+      frame(A, pid() + "03BF13")],
+     [r"LOG D AA:01:00:01: object 0x03#1 has no entity configured for it"],
+     # Said at DEBUG, not as a fault - it is a configuration hint, and a sender
+     # is entitled to broadcast more than one receiver wants.
+     [r"LOG W .*0x03", r"malformed BTHome payload"]),
+
     # --- the objects the component passes over --------------------------------
 
     ("an encrypted payload is refused, nothing is published",
@@ -437,6 +450,8 @@ COUNTS = [
      r"LOG W AA:01:00:03: payload did not authenticate", 1),
     ("and reported again after a payload that did decrypt",
      r"LOG W AA:01:00:03: payload did not authenticate", 1),
+    ("an object with no entity is named once, however often it arrives",
+     r"object 0x03#1 has no entity configured", 1),
 ]
 
 

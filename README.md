@@ -203,6 +203,17 @@ say `step_up` and be done. The specification advises sending commands only in
 encrypted payloads, since an unencrypted one can be observed and replayed by
 anyone in range.
 
+Every button, dimmer and command a registered sender broadcasts is logged at
+DEBUG whether or not a trigger picks it up, an opcode this version does not
+know included — so what a remote sends is visible before anything is wired to
+it. Measurements are quieter, because battery and voltage ride along in every
+frame: their values need `logger: level: VERBOSE`. What DEBUG does say, once
+per object and then never again, is that a value arrived with nowhere to go:
+
+```
+AA:01:00:01: object 0x03#1 has no entity configured for it
+```
+
 Unlike buttons and dimmers, commands carry no instance index: a second command
 object in a payload is the next instruction, not a second input.
 

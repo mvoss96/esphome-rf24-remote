@@ -1,6 +1,8 @@
 #include "nrf24_bthome.h"
 #include "esphome/core/log.h"
 
+#include <algorithm>
+
 #include "bthome_decode.h"
 
 namespace esphome {
@@ -373,6 +375,18 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
     }
     return 1;
   };
+  // An object no configured entity took. Worth saying once, because from the
+  // outside it is indistinguishable from a sender that never sent it: the
+  // remote broadcasts a temperature, no sensor is set up for it, and nothing
+  // anywhere says the value was there for the taking. Recorded now and reported
+  // in commit_(), so the sender's repeats do not say it three times over.
+  auto note_unclaimed = [](Pending &p, uint8_t object_id, uint8_t instance, bool claimed) {
+    if (claimed || p.unclaimed_count >= MAX_EVENTS) {
+      return;
+    }
+    p.unclaimed[p.unclaimed_count++] =
+        static_cast<uint16_t>(object_id) << 8 | static_cast<uint16_t>(instance);
+  };
 #ifdef USE_SENSOR
   for (auto &slot : this->object_sensors_) {
     slot.has_pending = false;
@@ -431,14 +445,17 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
         const uint8_t instance = instance_of(obj.object_id);
         ESP_LOGV(TAG, "%s: sensor 0x%02X#%u: %.3f", this->sender_id_text_, obj.object_id,
                  instance, obj.value);
+        bool claimed = false;
 #ifdef USE_SENSOR
         for (auto &slot : this->object_sensors_) {
           if (slot.object_id == obj.object_id && slot.index == instance) {
             slot.has_pending = true;
             slot.pending = obj.value;
+            claimed = true;
           }
         }
 #endif
+        note_unclaimed(pending, obj.object_id, instance, claimed);
         break;
       }
       case BTHome::ObjectKind::Binary: {
@@ -446,14 +463,17 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
         const bool state = obj.raw != 0;
         ESP_LOGV(TAG, "%s: binary 0x%02X#%u: %s", this->sender_id_text_, obj.object_id,
                  instance, state ? "on" : "off");
+        bool claimed = false;
 #ifdef USE_BINARY_SENSOR
         for (auto &slot : this->object_binary_sensors_) {
           if (slot.object_id == obj.object_id && slot.index == instance) {
             slot.has_pending = true;
             slot.pending = state;
+            claimed = true;
           }
         }
 #endif
+        note_unclaimed(pending, obj.object_id, instance, claimed);
         break;
       }
       case BTHome::ObjectKind::Text:
@@ -465,9 +485,13 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
                  static_cast<unsigned>(obj.length));
         // The device name is the first text object, which is what senders use
         // 0x53 for; further ones need a text_sensor of their own.
+        bool claimed = false;
         if (is_text && instance == 1) {
           pending.name = obj.bytes;
           pending.name_len = obj.length;
+          // Taken whether or not a name text sensor exists: it also feeds the
+          // device-name log line, so it is never an object nobody looked at.
+          claimed = true;
         }
 #ifdef USE_TEXT_SENSOR
         for (auto &slot : this->object_text_sensors_) {
@@ -475,9 +499,11 @@ bool NRF24BTHomeDevice::handle_service_data(const uint8_t *data, size_t len, boo
             slot.has_pending = true;
             slot.bytes = obj.bytes;
             slot.length = obj.length;
+            claimed = true;
           }
         }
 #endif
+        note_unclaimed(pending, obj.object_id, instance, claimed);
         break;
       }
       case BTHome::ObjectKind::DeviceTypeId: {
@@ -580,6 +606,22 @@ void NRF24BTHomeDevice::commit_(const Pending &pending) {
     for (auto *trigger : this->dimmer_triggers_) {
       trigger->trigger(i + 1, steps);
     }
+  }
+
+  // Said once per object, at DEBUG rather than VERBOSE, because this is the
+  // line that turns "the remote sends nothing useful" into "the remote sends
+  // this and you have not asked for it". Once configured it falls silent; the
+  // per-object VERBOSE lines above remain for watching values go by.
+  for (uint8_t i = 0; i < pending.unclaimed_count; i++) {
+    const uint16_t key = pending.unclaimed[i];
+    if (std::find(this->reported_unclaimed_.begin(), this->reported_unclaimed_.end(), key) !=
+        this->reported_unclaimed_.end()) {
+      continue;
+    }
+    this->reported_unclaimed_.push_back(key);
+    ESP_LOGD(TAG, "%s: object 0x%02X#%u has no entity configured for it",
+             this->sender_id_text_, static_cast<unsigned>(key >> 8),
+             static_cast<unsigned>(key & 0xFF));
   }
 
   // Commands fire in payload order and are not indexed: unlike a button, a
