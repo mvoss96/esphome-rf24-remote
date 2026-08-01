@@ -149,7 +149,7 @@ stream over this link looks like when it is asked to arrive intact.
 
 ```yaml
 external_components:
-  - source: github://mvoss96/esphome-rf24-remote@v0.4.0
+  - source: github://mvoss96/esphome-rf24-remote@v0.5.0
     components: [nrf24, nrf24_bthome]
 
 spi:
