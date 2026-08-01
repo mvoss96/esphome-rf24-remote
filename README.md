@@ -211,8 +211,12 @@ frame: their values need `logger: level: VERBOSE`. What DEBUG does say, once
 per object and then never again, is that a value arrived with nowhere to go:
 
 ```
-AA:01:00:01: object 0x03#1 has no entity configured for it
+AA:01:00:01: object 0x03#1 (humidity) has no entity configured for it
 ```
+
+`humidity` there is the key you would write under `sensor:` — the name comes
+from the same table the configuration schema is built from, so a name in that
+line is a name that works in a config.
 
 Unlike buttons and dimmers, commands carry no instance index: a second command
 object in a payload is the next instruction, not a second input.

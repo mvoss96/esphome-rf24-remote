@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "bthome_decode.h"
+#include "object_names.h"
 
 namespace esphome {
 namespace nrf24_bthome {
@@ -619,9 +620,12 @@ void NRF24BTHomeDevice::commit_(const Pending &pending) {
       continue;
     }
     this->reported_unclaimed_.push_back(key);
-    ESP_LOGD(TAG, "%s: object 0x%02X#%u has no entity configured for it",
-             this->sender_id_text_, static_cast<unsigned>(key >> 8),
-             static_cast<unsigned>(key & 0xFF));
+    const uint8_t object_id = static_cast<uint8_t>(key >> 8);
+    const char *name = object_type_name(object_id);
+    ESP_LOGD(TAG, "%s: object 0x%02X#%u (%s) has no entity configured for it",
+             this->sender_id_text_, static_cast<unsigned>(object_id),
+             static_cast<unsigned>(key & 0xFF),
+             name != nullptr ? name : "not mapped by this version");
   }
 
   // Commands fire in payload order and are not indexed: unlike a button, a

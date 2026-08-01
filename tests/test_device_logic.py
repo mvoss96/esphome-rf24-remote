@@ -183,7 +183,9 @@ CASES = [
     ("an object with no entity is named once, however often it arrives",
      [frame(A, pid() + "03BF13"), frame(A, pid() + "03BF13"),
       frame(A, pid() + "03BF13")],
-     [r"LOG D AA:01:00:01: object 0x03#1 has no entity configured for it"],
+     # Named, not just numbered: "humidity" is the key a config would use for
+     # it, taken from the same table the schema is built from.
+     [r"LOG D AA:01:00:01: object 0x03#1 \(humidity\) has no entity configured"],
      # Said at DEBUG, not as a fault - it is a configuration hint, and a sender
      # is entitled to broadcast more than one receiver wants.
      [r"LOG W .*0x03", r"malformed BTHome payload"]),
@@ -451,7 +453,7 @@ COUNTS = [
     ("and reported again after a payload that did decrypt",
      r"LOG W AA:01:00:03: payload did not authenticate", 1),
     ("an object with no entity is named once, however often it arrives",
-     r"object 0x03#1 has no entity configured", 1),
+     r"object 0x03#1 \(humidity\) has no entity configured", 1),
 ]
 
 
