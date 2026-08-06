@@ -6,9 +6,9 @@ release title) — every tagged version needs a section here before tagging.
 
 ## v0.5.1 (2026-08-06)
 
-- bthome-cpp bumped `0.5.0` → `0.5.1`: the fixes from the library's external
-  review (encryption counter handling, service UUID, AD length, version
-  reporting). No change in this component's own code.
+- bthome-cpp bumped `0.5.0` → `0.5.1`: fixes to encryption counter handling,
+  service UUID, AD length and version reporting. No change in this
+  component's own code.
 
 ## v0.5.0 — BTHome command events (2026-08-01)
 
