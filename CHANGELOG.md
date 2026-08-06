@@ -4,6 +4,12 @@ User-facing changes per release. The release workflow publishes the matching
 section as the GitHub release notes (the heading, minus the date, becomes the
 release title) — every tagged version needs a section here before tagging.
 
+## v0.5.1 (2026-08-06)
+
+- bthome-cpp bumped `0.5.0` → `0.5.1`: the fixes from the library's external
+  review (encryption counter handling, service UUID, AD length, version
+  reporting). No change in this component's own code.
+
 ## v0.5.0 — BTHome command events (2026-08-01)
 
 A remote can now tell this receiver what to do, not only what happened at the remote — BTHome's command object, which the decoder already understood and the component stepped over.

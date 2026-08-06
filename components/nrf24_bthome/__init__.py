@@ -32,7 +32,7 @@ CONF_ON_COMMAND = "on_command"
 CONF_ENCRYPTION_KEY = "encryption_key"
 CONF_MAC_ADDRESS = "mac_address"
 
-BTHOME_CPP_VERSION = "0.5.0"  # PlatformIO registry: mvoss96/bthome-cpp
+BTHOME_CPP_VERSION = "0.5.1"  # PlatformIO registry: mvoss96/bthome-cpp
 
 
 def _sender_id(value):
