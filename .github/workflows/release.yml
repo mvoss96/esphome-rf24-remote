@@ -1,0 +1,68 @@
+# On every version tag: extract the tag's CHANGELOG.md section as the release
+# notes (no section, no release), prove the component still compiles against
+# the current ESPHome stable, then create the GitHub release — or complete it,
+# when the release was started from the web UI (which pushes the same tag).
+# The heavy test suites are not repeated here; they ran on the push to main.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          awk -v tag="$GITHUB_REF_NAME" '
+            !found && $0 ~ "^## "tag"( |$)" { found=1; next }
+            found && (/^## / || /^---/) { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > release-notes.md || {
+            echo "::error::CHANGELOG.md has no section '## $GITHUB_REF_NAME' — add one before tagging"
+            exit 1
+          }
+          # The section heading (minus the trailing date) becomes the release
+          # title, so descriptive titles like "v0.5.0 — BTHome command events"
+          # keep working.
+          grep -m1 "^## $GITHUB_REF_NAME" CHANGELOG.md \
+            | sed -E 's/^## //; s/ \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$//' > release-title.txt
+          cat release-title.txt release-notes.md
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-${{ hashFiles('tests/esp32c3.yaml') }}
+          restore-keys: platformio-
+      - run: pip install esphome
+
+      - name: Compile gate (esp32-c3)
+        run: esphome compile tests/esp32c3.yaml
+
+      - name: Append tested-against footer
+        run: |
+          printf '\n---\nTested against ESPHome %s (esp32-c3, esp-idf).\n' \
+            "$(esphome version | sed 's/^Version: //')" >> release-notes.md
+
+      - name: Create or complete the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE=$(cat release-title.txt)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # Tag came from a web-UI release: the changelog section replaces
+            # whatever was typed there — CHANGELOG.md is the source of truth.
+            gh release edit "$GITHUB_REF_NAME" --title "$TITLE" --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$TITLE" --notes-file release-notes.md
+          fi
