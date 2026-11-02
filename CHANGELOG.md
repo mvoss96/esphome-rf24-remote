@@ -4,6 +4,14 @@ User-facing changes per release. The release workflow publishes the matching
 section as the GitHub release notes (the heading, minus the date, becomes the
 release title) — every tagged version needs a section here before tagging.
 
+## v0.5.2 (2026-11-02)
+
+- Builds again on ESPHome 2026.10 with an `encryption_key` configured.
+  ESPHome 2026.10 removes AES-CCM from mbedTLS unless a component requests
+  it; `nrf24_bthome` now does, so the link no longer fails with
+  `undefined reference to 'mbedtls_ccm_init'`. Older ESPHome versions are
+  unaffected.
+
 ## v0.5.1 (2026-08-06)
 
 - bthome-cpp bumped `0.5.0` → `0.5.1`: fixes to encryption counter handling,
