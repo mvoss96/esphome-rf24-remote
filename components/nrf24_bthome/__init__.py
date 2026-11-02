@@ -1,8 +1,9 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation
-from esphome.components import nrf24, time
+from esphome.components import esp32, nrf24, time
 from esphome.const import CONF_ID, CONF_TIME_ID, CONF_TIMEOUT, CONF_TRIGGER_ID
+from esphome.core import CORE
 
 CODEOWNERS = ["@mvoss96"]
 DEPENDENCIES = ["nrf24"]
@@ -176,5 +177,9 @@ async def to_code(config):
     # cipher in.
     if any(CONF_ENCRYPTION_KEY in dev for dev in config[CONF_DEVICES]):
         cg.add_define("USE_BTHOME_ENCRYPTION")
+        # ESPHome 2026.10 compiles AES-CCM out of mbedTLS unless a component
+        # asks for it. Older versions have no such helper and keep CCM.
+        if CORE.is_esp32 and hasattr(esp32, "require_mbedtls_tls_extras"):
+            esp32.require_mbedtls_tls_extras(["CONFIG_MBEDTLS_CCM_C"])
 
     cg.add_library("mvoss96/bthome-cpp", BTHOME_CPP_VERSION)
